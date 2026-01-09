@@ -12,6 +12,20 @@
 This document summarizes pace deltas (minutes per NM) by leg.
 \paragraph{How to read.}
 Each leg figure shows, for every boat, the distribution of per-sample \emph{pace delta} relative to the fleet mean pace at the same \emph{progress} along the rhumb line (average route). Negative values mean a boat was faster than the baseline (lower minutes per NM), while positive values mean slower. The box spans the interquartile range (25--75\%), the horizontal line is the median, and the dot is the mean; whiskers show the full min/max observed within that leg.
+\paragraph{Definitions (speed, pace, and mean pace).}
+The input data contains a \emph{speed} sample for each GPS record (after unit conversion to knots, $\mathrm{kn}$).
+\emph{Pace} is the inverse representation: minutes per nautical mile. For each sample,
+\[
+\mathrm{pace}\,[\mathrm{min}/\mathrm{NM}] = \frac{60}{v\,[\mathrm{kn}]}.
+\]
+For example, $6.0\,\mathrm{kn} \Rightarrow 10.00\,\mathrm{min}/\mathrm{NM}$ and $5.0\,\mathrm{kn} \Rightarrow 12.00\,\mathrm{min}/\mathrm{NM}$.
+\emph{Mean pace} in this report refers to a \emph{baseline} computed at a given location along the course: all boat samples are first projected to the rhumb line (average route) to obtain progress, then within a local progress window the per-sample paces are averaged to form a mean pace curve versus progress (and lightly smoothed along progress). Note that ``mean pace'' is \emph{not} the same as converting the mean speed, because inversion is nonlinear: in general $\overline{(60/v)} \neq 60/\overline{v}$.
+\paragraph{Pace delta.}
+For each boat sample, the plotted value is
+\[
+\Delta \mathrm{pace} = \mathrm{pace}_{\mathrm{boat}} - \mathrm{pace}_{\mathrm{mean}}(\mathrm{progress}).
+\]
+Negative $\Delta\mathrm{pace}$ means faster-than-baseline at that point on the course (lower minutes per NM), while positive means slower-than-baseline.
 \paragraph{High-level observations.}
 Leg 1 shows the largest early separation, legs 2--4 are comparatively tight (small spreads), and legs 9--10 are the most volatile with very large slow outliers for some boats. Across multiple legs, \emph{Nordri} and \emph{Mercutio} frequently appear among the fastest boats by mean pace delta, while \emph{Gladys} is often among the slowest.
 \clearpage
