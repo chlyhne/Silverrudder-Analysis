@@ -1,0 +1,21 @@
+__pycache__/
+data/silverrudder_2024/
+data/silverrudder_2025/Silverrudder 2025_Keelboats Small_gps_data.csv
+data/silverrudder_2025/waypoints/
+documentation/figures/
+documentation/main.aux
+documentation/main.fdb_latexmk
+documentation/main.fls
+documentation/main.log
+documentation/main.out
+documentation/main.pdf
+documentation/main.synctex.gz
+finish.csv
+main.aux
+main.fdb_latexmk
+main.fls
+main.log
+main.out
+ne_10m_coastline.geojson
+silver.asv
+silver.m
