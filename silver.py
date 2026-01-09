@@ -829,3 +829,7 @@ def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
             ax.plot(lon, lat, color=(0.35, 0.35, 0.35), linewidth=1.0)
 
 
+if __name__ == "__main__":
+    main()
+
+
