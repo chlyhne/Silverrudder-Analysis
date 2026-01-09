@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 def read_tracking_csv_as_struct(filename):
