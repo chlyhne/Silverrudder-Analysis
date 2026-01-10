@@ -617,62 +617,10 @@ def compute_sample_alpha_by_route_windows(
     window_start_index = np.arange(window_count) * window_step_samples + 1
     window_end_index = window_start_index + window_sample_count - 1
     window_end_index = np.minimum(window_end_index, route_sample_count)
-
-    speed_samples_by_window = [[] for _ in range(window_count)]
-
-    for track in tracks:
-        route_index = track["routeIdx"].astype(float)
-        speed = track["speed"].astype(float)
-        valid_mask = (
-            np.isfinite(route_index)
-            & np.isfinite(speed)
-            & (route_index >= 1)
-            & (route_index <= route_sample_count)
-        )
-        route_index = route_index[valid_mask]
-        speed = speed[valid_mask]
-        if route_index.size == 0:
-            continue
-
-        window_min_for_sample = np.floor((route_index - window_sample_count) / window_step_samples) + 1
-        window_max_for_sample = np.floor((route_index - 1) / window_step_samples) + 1
-        window_min_for_sample = np.clip(window_min_for_sample, 1, window_count).astype(int)
-        window_max_for_sample = np.clip(window_max_for_sample, 1, window_count).astype(int)
-
-        for sample_index in range(route_index.size):
-            for window_index in range(window_min_for_sample[sample_index], window_max_for_sample[sample_index] + 1):
-                if route_index[sample_index] < window_start_index[window_index - 1] or \
-                        route_index[sample_index] > window_end_index[window_index - 1]:
-                    continue
-                speed_samples_by_window[window_index - 1].append(speed[sample_index])
-
-    min_speed_by_window = np.full(window_count, np.nan)
-    max_speed_by_window = np.full(window_count, np.nan)
-    mean_speed_by_window = np.full(window_count, np.nan)
-    mean_pace_by_window = np.full(window_count, np.nan)
-    for idx, samples in enumerate(speed_samples_by_window):
-        samples = np.asarray(samples, dtype=float)
-        samples = samples[np.isfinite(samples)]
-        if samples.size == 0:
-            continue
-        min_speed_by_window[idx] = np.min(samples)
-        max_speed_by_window[idx] = np.max(samples)
-        mean_speed_by_window[idx] = np.mean(samples)
-        positive_samples = samples[samples > 0]
-        if positive_samples.size:
-            mean_pace_by_window[idx] = np.mean(60.0 / positive_samples)
-
-    min_speed_by_window = lowpass_forward_backward(min_speed_by_window, filter_alpha)
-    max_speed_by_window = lowpass_forward_backward(max_speed_by_window, filter_alpha)
-    mean_speed_by_window = lowpass_forward_backward(mean_speed_by_window, filter_alpha)
-    mean_pace_by_window = lowpass_forward_backward(mean_pace_by_window, filter_alpha)
-
-    # Window progress grid (center of each window) for synchronized sampling
     window_center_index = (window_start_index + window_end_index) / 2
     window_progress = (window_center_index - 1) / (route_sample_count - 1)
 
-    sum_squared_error = np.zeros(window_count)
-    count_squared_error = np.zeros(window_count)
+    speed_on_grid_by_track = []
 
     for track in tracks:
         route_index = track["routeIdx"].astype(float)
@@ -701,7 +649,37 @@ def compute_sample_alpha_by_route_windows(
         speed_on_grid = np.interp(window_progress, progress_unique, speed_unique)
         outside_mask = (window_progress < progress_unique[0]) | (window_progress > progress_unique[-1])
         speed_on_grid[outside_mask] = np.nan
+        speed_on_grid_by_track.append(speed_on_grid)
 
+    min_speed_by_window = np.full(window_count, np.nan)
+    max_speed_by_window = np.full(window_count, np.nan)
+    mean_speed_by_window = np.full(window_count, np.nan)
+    mean_pace_by_window = np.full(window_count, np.nan)
+
+    if speed_on_grid_by_track:
+        speed_grid = np.vstack(speed_on_grid_by_track)
+        finite_counts = np.sum(np.isfinite(speed_grid), axis=0)
+        valid_windows = finite_counts > 0
+        if valid_windows.any():
+            min_speed_by_window[valid_windows] = np.nanmin(speed_grid[:, valid_windows], axis=0)
+            max_speed_by_window[valid_windows] = np.nanmax(speed_grid[:, valid_windows], axis=0)
+            mean_speed_by_window[valid_windows] = np.nanmean(speed_grid[:, valid_windows], axis=0)
+
+        for window_index in range(window_count):
+            speeds_here = speed_grid[:, window_index]
+            speeds_here = speeds_here[np.isfinite(speeds_here) & (speeds_here > 0)]
+            if speeds_here.size:
+                mean_pace_by_window[window_index] = np.mean(60.0 / speeds_here)
+
+    min_speed_by_window = lowpass_forward_backward(min_speed_by_window, filter_alpha)
+    max_speed_by_window = lowpass_forward_backward(max_speed_by_window, filter_alpha)
+    mean_speed_by_window = lowpass_forward_backward(mean_speed_by_window, filter_alpha)
+    mean_pace_by_window = lowpass_forward_backward(mean_pace_by_window, filter_alpha)
+
+    sum_squared_error = np.zeros(window_count)
+    count_squared_error = np.zeros(window_count)
+
+    for speed_on_grid in speed_on_grid_by_track:
         squared_error = (speed_on_grid - mean_speed_by_window) ** 2
         filtered_squared_error = lowpass_forward_backward(squared_error, filter_alpha)
         finite_mask = np.isfinite(filtered_squared_error)
@@ -725,6 +703,7 @@ def compute_sample_alpha_by_route_windows(
         "windowSampleCount": window_sample_count,
         "windowStepSamples": window_step_samples,
         "routeSampleCount": route_sample_count,
+        "windowProgress": window_progress,
         "filterAlpha": filter_alpha,
     }
 
@@ -741,16 +720,35 @@ def compute_sample_alpha_by_route_windows(
         if valid_mask.any():
             valid_indices = np.where(valid_mask)[0]
             route_index_valid = route_index[valid_indices]
-            home_window_index = np.floor((route_index_valid - 1) / window_step_samples) + 1
-            home_window_index = np.clip(home_window_index, 1, window_count).astype(int)
+            progress = (route_index_valid - 1) / (route_sample_count - 1)
 
-            for idx, window_index in zip(valid_indices, home_window_index):
-                min_speed = min_speed_by_window[window_index - 1]
-                max_speed = max_speed_by_window[window_index - 1]
-                if np.isfinite(min_speed) and np.isfinite(max_speed) and max_speed > min_speed:
-                    alpha[idx] = (speed[idx] - min_speed) / (max_speed - min_speed)
-                else:
-                    alpha[idx] = 0.5
+            min_mask = np.isfinite(window_progress) & np.isfinite(min_speed_by_window)
+            max_mask = np.isfinite(window_progress) & np.isfinite(max_speed_by_window)
+
+            if np.count_nonzero(min_mask) >= 2 and np.count_nonzero(max_mask) >= 2:
+                min_speed = np.interp(
+                    progress,
+                    window_progress[min_mask],
+                    min_speed_by_window[min_mask],
+                    left=np.nan,
+                    right=np.nan,
+                )
+                max_speed = np.interp(
+                    progress,
+                    window_progress[max_mask],
+                    max_speed_by_window[max_mask],
+                    left=np.nan,
+                    right=np.nan,
+                )
+            else:
+                min_speed = np.full_like(progress, np.nan, dtype=float)
+                max_speed = np.full_like(progress, np.nan, dtype=float)
+
+            denom = max_speed - min_speed
+            alpha_values = (speed[valid_indices] - min_speed) / denom
+            invalid_alpha = ~np.isfinite(alpha_values) | (denom <= 0)
+            alpha_values[invalid_alpha] = 0.5
+            alpha[valid_indices] = alpha_values
 
         track["alpha"] = alpha
 
@@ -853,9 +851,9 @@ def enable_rhumbline_datatip(ax, rhumb_line, speed_window_stats, average_route):
     cursor = mplcursors.cursor(rhumb_line, hover=True)
     ax._rhumbline_cursor = cursor
     route_sample_count = len(average_route["lat"])
-    window_step = speed_window_stats.get("windowStepSamples", 1)
     min_speed = speed_window_stats.get("minSpeedByWindow", np.array([]))
     max_speed = speed_window_stats.get("maxSpeedByWindow", np.array([]))
+    window_progress = speed_window_stats.get("windowProgress", np.array([]))
 
     @cursor.connect("add")
     def on_add(selection):
@@ -866,12 +864,29 @@ def enable_rhumbline_datatip(ax, rhumb_line, speed_window_stats, average_route):
         else:
             progress = 0.0
 
-        window_count = len(min_speed)
-        if window_count > 0:
-            home_window = int(math.floor(index / window_step))
-            home_window = max(0, min(window_count - 1, home_window))
-            min_value = min_speed[home_window]
-            max_value = max_speed[home_window]
+        if window_progress.size >= 2:
+            min_mask = np.isfinite(window_progress) & np.isfinite(min_speed)
+            max_mask = np.isfinite(window_progress) & np.isfinite(max_speed)
+            if np.count_nonzero(min_mask) >= 2:
+                min_value = np.interp(
+                    progress,
+                    window_progress[min_mask],
+                    min_speed[min_mask],
+                    left=np.nan,
+                    right=np.nan,
+                )
+            else:
+                min_value = np.nan
+            if np.count_nonzero(max_mask) >= 2:
+                max_value = np.interp(
+                    progress,
+                    window_progress[max_mask],
+                    max_speed[max_mask],
+                    left=np.nan,
+                    right=np.nan,
+                )
+            else:
+                max_value = np.nan
             min_text = f"{min_value:.2f}" if np.isfinite(min_value) else "N/A"
             max_text = f"{max_value:.2f}" if np.isfinite(max_value) else "N/A"
         else:
@@ -933,10 +948,9 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
     reference_lat = float(np.nanmedian(route_lat))
     cos_lat = math.cos(math.radians(reference_lat))
 
-    window_step = speed_window_stats.get("windowStepSamples", 1)
     min_speed = speed_window_stats.get("minSpeedByWindow", np.array([]))
     max_speed = speed_window_stats.get("maxSpeedByWindow", np.array([]))
-    window_count = len(min_speed)
+    window_progress = speed_window_stats.get("windowProgress", np.array([]))
 
     annotation = ax.annotate(
         "",
@@ -1001,11 +1015,29 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
                 progress = route_index / (route_lon.size - 1)
             else:
                 progress = 0.0
-            if window_count > 0:
-                home_window = int(math.floor(route_index / window_step))
-                home_window = max(0, min(window_count - 1, home_window))
-                min_value = min_speed[home_window]
-                max_value = max_speed[home_window]
+            if window_progress.size >= 2:
+                min_mask = np.isfinite(window_progress) & np.isfinite(min_speed)
+                max_mask = np.isfinite(window_progress) & np.isfinite(max_speed)
+                if np.count_nonzero(min_mask) >= 2:
+                    min_value = np.interp(
+                        progress,
+                        window_progress[min_mask],
+                        min_speed[min_mask],
+                        left=np.nan,
+                        right=np.nan,
+                    )
+                else:
+                    min_value = np.nan
+                if np.count_nonzero(max_mask) >= 2:
+                    max_value = np.interp(
+                        progress,
+                        window_progress[max_mask],
+                        max_speed[max_mask],
+                        left=np.nan,
+                        right=np.nan,
+                    )
+                else:
+                    max_value = np.nan
                 min_text = f"{min_value:.2f}" if np.isfinite(min_value) else "N/A"
                 max_text = f"{max_value:.2f}" if np.isfinite(max_value) else "N/A"
             else:
