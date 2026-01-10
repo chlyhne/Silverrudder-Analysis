@@ -334,7 +334,12 @@ def plot_alpha_box_plot(tracks, route_sample_count, way_point_progress, way_poin
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         maximize_figure(fig)
-        apply_pace_boxplot_axis_style(ax)
+        ax.grid(False)
+        ax.grid(True, axis="y")
+        ax.grid(True, axis="y", which="minor", linewidth=0.6, alpha=0.5)
+        ax.grid(False, axis="x", which="both")
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        ax.tick_params(axis="y", which="minor", length=2)
 
         leg_start = progress_values[leg_index]
         leg_end = progress_values[leg_index + 1]
@@ -446,7 +451,12 @@ def plot_speed_delta_box_plot(tracks, speed_window_stats, way_point_progress, wa
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         maximize_figure(fig)
-        apply_pace_boxplot_axis_style(ax)
+        ax.grid(False)
+        ax.grid(True, axis="y")
+        ax.grid(True, axis="y", which="minor", linewidth=0.6, alpha=0.5)
+        ax.grid(False, axis="x", which="both")
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        ax.tick_params(axis="y", which="minor", length=2)
 
         leg_start = progress_values[leg_index]
         leg_end = progress_values[leg_index + 1]
@@ -559,22 +569,10 @@ def apply_pace_boxplot_axis_style(ax):
     ax.grid(False)
     ax.yaxis.set_major_locator(MultipleLocator(10))
     ax.yaxis.set_minor_locator(MultipleLocator(2))
-    ax.grid(True, axis="y", which="major", linewidth=0.9, alpha=0.75)
+    ax.grid(True, axis="y", which="major")
     ax.grid(True, axis="y", which="minor", linewidth=0.6, alpha=0.5)
     ax.grid(False, axis="x", which="both")
     ax.tick_params(axis="y", which="minor", length=2)
-    apply_boxplot_zero_line(ax)
-
-
-def apply_boxplot_zero_line(ax):
-    """Draw a black reference line at y=0 for box plots."""
-    for gridline in ax.get_ygridlines():
-        ydata = gridline.get_ydata()
-        if ydata is None or len(ydata) == 0:
-            continue
-        if np.allclose(ydata, 0):
-            gridline.set_visible(False)
-    ax.axhline(0, color="black", linewidth=1.0, zorder=0)
 
 
 def plot_pace_delta_box_plot(tracks, speed_window_stats, way_point_progress, way_point_names, export_dir=None):
