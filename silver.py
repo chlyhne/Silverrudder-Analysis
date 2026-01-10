@@ -94,9 +94,18 @@ def main():
     trackNameMap = dict(zip(trackIdKeys, boatNames))
     tracks = apply_track_names(tracks, trackNameMap)
 
+    localOffsetHours = race_meta.get("local_offset_hours", 0)
+    startTimeLocal = race_meta.get("start_time_local", "")
+    startTimeUtc = parse_local_time_to_utc(startTimeLocal, localOffsetHours)
+    if startTimeUtc is None:
+        raise ValueError("start_time_local missing or invalid in race_metadata.json")
+
     geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
     _, waypoint_gates = load_geo_data(geo_data_path)
     start_gate_pos, finish_gate_pos = find_start_finish_gate_positions(waypoint_gates)
+    first_leg_gate_pos = start_gate_pos + 1
+    if first_leg_gate_pos >= len(waypoint_gates):
+        raise ValueError("No waypoint available after Start for first leg.")
     gate_times_by_track = compute_gate_crossings(tracks, waypoint_gates)
     tracks = trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
 
@@ -143,6 +152,9 @@ def main():
             speedWindowStats,
             wayPointProgress,
             wayPointNames,
+            averageRoute,
+            startTimeUtc,
+            first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
         )
 
@@ -152,6 +164,9 @@ def main():
             speedWindowStats,
             wayPointProgress,
             wayPointNames,
+            averageRoute,
+            startTimeUtc,
+            first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
             latex_include_path=(
                 Path("documentation") / "boat-pace-delta-figures.tex" if export_pdf else None
@@ -539,6 +554,34 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
     return track_progress_by_track, pace_delta_by_track
 
 
+def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
+    """Compute per-boat pace for the first leg from start time to first gate."""
+    pace_values = []
+    if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
+        return np.full(len(tracks), np.nan, dtype=float)
+
+    leg_distance_nm = first_leg_distance_m / 1852.0
+    if leg_distance_nm <= 0:
+        return np.full(len(tracks), np.nan, dtype=float)
+
+    for track in tracks:
+        gate_times = track.get("gateTimes", np.array([]))
+        if gate_times is None or len(gate_times) <= first_leg_gate_pos:
+            pace_values.append(np.nan)
+            continue
+
+        finish_time = gate_times[first_leg_gate_pos]
+        if not np.isfinite(finish_time) or finish_time <= start_time_utc:
+            pace_values.append(np.nan)
+            continue
+
+        leg_time_sec = finish_time - start_time_utc
+        pace_min_per_nm = (leg_time_sec / 60.0) / leg_distance_nm
+        pace_values.append(pace_min_per_nm)
+
+    return np.asarray(pace_values, dtype=float)
+
+
 def apply_pace_boxplot_axis_style(ax):
     """Apply y-axis grid/tick styling for pace box plots."""
     ax.grid(False)
@@ -550,7 +593,16 @@ def apply_pace_boxplot_axis_style(ax):
     ax.tick_params(axis="y", which="minor", length=2)
 
 
-def plot_pace_delta_box_plot(tracks, speed_window_stats, way_point_progress, way_point_names, export_dir=None):
+def plot_pace_delta_box_plot(
+    tracks,
+    speed_window_stats,
+    way_point_progress,
+    way_point_names,
+    average_route,
+    start_time_utc,
+    first_leg_gate_pos,
+    export_dir=None,
+):
     """Box plots of pace difference per leg, one figure per leg."""
     track_progress_by_track, pace_delta_by_track = compute_pace_delta_samples(
         tracks, speed_window_stats
@@ -562,6 +614,22 @@ def plot_pace_delta_box_plot(tracks, speed_window_stats, way_point_progress, way
     leg_count = len(progress_values) - 1
     if leg_count < 1 or not tracks:
         return
+
+    route_distance_m = cumulative_distance_meters(
+        np.asarray(average_route["lat"], dtype=float),
+        np.asarray(average_route["lon"], dtype=float),
+    )[-1]
+    first_leg_distance_m = np.nan
+    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
+        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    first_leg_pace_by_track = compute_first_leg_pace_by_track(
+        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
+    )
+    if first_leg_pace_by_track.size:
+        first_leg_mean = float(np.nanmean(first_leg_pace_by_track))
+    else:
+        first_leg_mean = np.nan
+    first_leg_delta_by_track = first_leg_pace_by_track - first_leg_mean
 
     track_count = len(tracks)
     leg_labels = []
@@ -582,17 +650,24 @@ def plot_pace_delta_box_plot(tracks, speed_window_stats, way_point_progress, way
             leg_start, leg_end = leg_end, leg_start
 
         leg_ordered = []
-        for track_index, (progress, pace_delta) in enumerate(
-            zip(track_progress_by_track, pace_delta_by_track)
-        ):
-            if progress.size == 0:
-                continue
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            pace_leg = pace_delta[leg_mask]
-            if pace_leg.size == 0:
-                continue
+        if leg_index == 0:
+            for track_index in range(track_count):
+                pace_delta_value = first_leg_delta_by_track[track_index]
+                if not np.isfinite(pace_delta_value):
+                    continue
+                leg_ordered.append((track_index, float(pace_delta_value), pace_delta_value))
+        else:
+            for track_index, (progress, pace_delta) in enumerate(
+                zip(track_progress_by_track, pace_delta_by_track)
+            ):
+                if progress.size == 0:
+                    continue
+                leg_mask = (progress >= leg_start) & (progress <= leg_end)
+                pace_leg = pace_delta[leg_mask]
+                if pace_leg.size == 0:
+                    continue
 
-            leg_ordered.append((track_index, float(np.mean(pace_leg)), pace_leg))
+                leg_ordered.append((track_index, float(np.mean(pace_leg)), pace_leg))
 
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
@@ -601,7 +676,17 @@ def plot_pace_delta_box_plot(tracks, speed_window_stats, way_point_progress, way
         leg_ordered.sort(key=lambda item: item[1])
         for plot_index, (track_index, _, pace_leg) in enumerate(leg_ordered, start=1):
             line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
-            draw_manual_box_plot(ax, plot_index, pace_leg, line_color)
+            if leg_index == 0:
+                ax.plot(
+                    plot_index,
+                    pace_leg,
+                    marker="o",
+                    markersize=6,
+                    color=line_color,
+                    linestyle="None",
+                )
+            else:
+                draw_manual_box_plot(ax, plot_index, pace_leg, line_color)
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
@@ -623,6 +708,9 @@ def plot_pace_delta_box_plot_by_boat(
     speed_window_stats,
     way_point_progress,
     way_point_names,
+    average_route,
+    start_time_utc,
+    first_leg_gate_pos,
     export_dir=None,
     latex_include_path=None,
 ):
@@ -637,6 +725,22 @@ def plot_pace_delta_box_plot_by_boat(
     leg_count = len(progress_values) - 1
     if leg_count < 1 or not tracks:
         return
+
+    route_distance_m = cumulative_distance_meters(
+        np.asarray(average_route["lat"], dtype=float),
+        np.asarray(average_route["lon"], dtype=float),
+    )[-1]
+    first_leg_distance_m = np.nan
+    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
+        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    first_leg_pace_by_track = compute_first_leg_pace_by_track(
+        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
+    )
+    if first_leg_pace_by_track.size:
+        first_leg_mean = float(np.nanmean(first_leg_pace_by_track))
+    else:
+        first_leg_mean = np.nan
+    first_leg_delta_by_track = first_leg_pace_by_track - first_leg_mean
 
     leg_labels = []
     for leg_index in range(leg_count):
@@ -671,14 +775,20 @@ def plot_pace_delta_box_plot_by_boat(
         if progress.size == 0:
             continue
         for leg_index in range(leg_count):
-            leg_start = progress_values[leg_index]
-            leg_end = progress_values[leg_index + 1]
-            if leg_start > leg_end:
-                leg_start, leg_end = leg_end, leg_start
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            pace_leg = pace_delta[leg_mask]
-            if pace_leg.size == 0:
-                continue
+            if leg_index == 0:
+                pace_delta_value = first_leg_delta_by_track[track_index]
+                if not np.isfinite(pace_delta_value):
+                    continue
+                pace_leg = np.array([pace_delta_value], dtype=float)
+            else:
+                leg_start = progress_values[leg_index]
+                leg_end = progress_values[leg_index + 1]
+                if leg_start > leg_end:
+                    leg_start, leg_end = leg_end, leg_start
+                leg_mask = (progress >= leg_start) & (progress <= leg_end)
+                pace_leg = pace_delta[leg_mask]
+                if pace_leg.size == 0:
+                    continue
             whisker_bounds = compute_whisker_bounds(pace_leg)
             if whisker_bounds is None:
                 continue
@@ -714,14 +824,20 @@ def plot_pace_delta_box_plot_by_boat(
         local_lower = np.inf
         local_upper = -np.inf
         for leg_index in range(leg_count):
-            leg_start = progress_values[leg_index]
-            leg_end = progress_values[leg_index + 1]
-            if leg_start > leg_end:
-                leg_start, leg_end = leg_end, leg_start
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            pace_leg = pace_delta[leg_mask]
-            if pace_leg.size == 0:
-                continue
+            if leg_index == 0:
+                pace_delta_value = first_leg_delta_by_track[track_index]
+                if not np.isfinite(pace_delta_value):
+                    continue
+                pace_leg = np.array([pace_delta_value], dtype=float)
+            else:
+                leg_start = progress_values[leg_index]
+                leg_end = progress_values[leg_index + 1]
+                if leg_start > leg_end:
+                    leg_start, leg_end = leg_end, leg_start
+                leg_mask = (progress >= leg_start) & (progress <= leg_end)
+                pace_leg = pace_delta[leg_mask]
+                if pace_leg.size == 0:
+                    continue
             whisker_bounds = compute_whisker_bounds(pace_leg)
             if whisker_bounds is None:
                 continue
@@ -752,6 +868,20 @@ def plot_pace_delta_box_plot_by_boat(
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
         for leg_index in range(leg_count):
+            if leg_index == 0:
+                pace_delta_value = first_leg_delta_by_track[track_index]
+                if not np.isfinite(pace_delta_value):
+                    continue
+                ax.plot(
+                    leg_index + 1,
+                    pace_delta_value,
+                    marker="o",
+                    markersize=6,
+                    color=line_color,
+                    linestyle="None",
+                )
+                continue
+
             leg_start = progress_values[leg_index]
             leg_end = progress_values[leg_index + 1]
             if leg_start > leg_end:
