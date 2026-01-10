@@ -185,6 +185,8 @@ def main():
 
 def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_progress, waypoint_names):
     """Plot each competitor track colored by local relative speed."""
+    previous_usetex = matplotlib.rcParams.get("text.usetex", False)
+    matplotlib.rcParams["text.usetex"] = False
     fig, ax = plt.subplots()
     maximize_figure(fig)
     ax.grid(True)
@@ -272,15 +274,14 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
     scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     scalar_mappable.set_array([])
     colorbar = fig.colorbar(scalar_mappable, ax=ax)
-    colorbar.set_label(r"$\alpha$ (rel. speed)")
+    colorbar.set_label("alpha (rel. speed)")
 
-    ax.set_xlabel(r"$\lambda\,[^\circ]$")
-    ax.set_ylabel(r"$\phi\,[^\circ]$")
-    ax.set_title(r"Tracks colored by $\alpha$")
+    ax.set_xlabel("Longitude [deg]")
+    ax.set_ylabel("Latitude [deg]")
+    ax.set_title("Tracks colored by alpha")
 
-    enable_rhumbline_datatip(ax, rhumb_line, speed_window_stats, average_route)
-    enable_track_datatips(line_collections)
     enable_manual_datatips(ax, tracks, average_route, speed_window_stats)
+    matplotlib.rcParams["text.usetex"] = previous_usetex
 
 
 def plot_alpha_box_plot(tracks, route_sample_count, way_point_progress, way_point_names, export_dir=None):

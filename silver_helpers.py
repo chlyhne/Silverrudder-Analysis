@@ -859,6 +859,7 @@ def enable_rhumbline_datatip(ax, rhumb_line, speed_window_stats, average_route):
 
     @cursor.connect("add")
     def on_add(selection):
+        selection.annotation.set_usetex(False)
         index = selection.index
         if route_sample_count > 1:
             progress = index / (route_sample_count - 1)
@@ -899,6 +900,7 @@ def enable_track_datatips(line_collections):
 
     @cursor.connect("add")
     def on_add(selection):
+        selection.annotation.set_usetex(False)
         artist = selection.artist
         track_name = getattr(artist, "track_name", "Boat")
         speed_series = getattr(artist, "track_speed", None)
@@ -944,6 +946,7 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
         bbox=dict(boxstyle="round", fc="white", alpha=0.9),
         arrowprops=dict(arrowstyle="->", color="black"),
     )
+    annotation.set_usetex(False)
     annotation.set_visible(False)
 
     def on_click(event):
