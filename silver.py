@@ -1,18 +1,12 @@
-﻿import csv
 import json
-import math
-import re
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.ticker import AutoMinorLocator, MultipleLocator
-
+from matplotlib.ticker import MultipleLocator
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Computer Modern Roman"]
@@ -267,98 +261,6 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
 
     sh.enable_manual_datatips(ax, tracks, average_route, speed_window_stats)
     matplotlib.rcParams["text.usetex"] = previous_usetex
-
-
-def plot_alpha_box_plot(tracks, route_sample_count, way_point_progress, way_point_names, export_dir=None):
-    """Box plots of alpha per leg, one figure per leg."""
-    if route_sample_count < 2:
-        return
-
-    progress_values, waypoint_labels = sh.normalize_waypoint_inputs(way_point_progress, way_point_names)
-    leg_count = len(progress_values) - 1
-    if leg_count < 1 or not tracks:
-        return
-
-    track_progress_by_track = []
-    alpha_by_track = []
-    for track in tracks:
-        route_index = track["routeIdx"].astype(float)
-        alpha_values = track["alpha"].astype(float)
-        valid_mask = (
-            np.isfinite(route_index)
-            & np.isfinite(alpha_values)
-            & (route_index >= 1)
-            & (route_index <= route_sample_count)
-        )
-        if not valid_mask.any():
-            track_progress_by_track.append(np.array([]))
-            alpha_by_track.append(np.array([]))
-            continue
-
-        progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
-        track_progress_by_track.append(progress)
-        alpha_by_track.append(alpha_values[valid_mask])
-
-    track_count = len(tracks)
-    leg_labels = []
-    for leg_index in range(leg_count):
-        if leg_index + 1 < len(waypoint_labels):
-            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
-        else:
-            leg_labels.append(f"Leg {leg_index + 1}")
-
-    for leg_index in range(leg_count - 1, -1, -1):
-        fig, ax = plt.subplots()
-        sh.maximize_figure(fig)
-        ax.grid(False)
-        ax.grid(True, axis="y")
-        ax.grid(True, axis="y", which="minor", linewidth=0.6, alpha=0.5)
-        ax.grid(False, axis="x", which="both")
-        ax.yaxis.set_minor_locator(AutoMinorLocator())
-        ax.tick_params(axis="y", which="minor", length=2)
-
-        leg_start = progress_values[leg_index]
-        leg_end = progress_values[leg_index + 1]
-        if leg_start > leg_end:
-            leg_start, leg_end = leg_end, leg_start
-
-        leg_ordered = []
-        for track_index, (progress, alpha_values) in enumerate(
-            zip(track_progress_by_track, alpha_by_track)
-        ):
-            if progress.size == 0:
-                continue
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            alpha_leg = alpha_values[leg_mask]
-            if alpha_leg.size == 0:
-                continue
-
-            leg_ordered.append((track_index, float(np.mean(alpha_leg)), alpha_leg))
-
-        if not leg_ordered:
-            ax.set_title(leg_labels[leg_index])
-            continue
-
-        leg_ordered.sort(key=lambda item: item[1])
-        for plot_index, (track_index, _, alpha_leg) in enumerate(leg_ordered, start=1):
-            line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
-            sh.draw_manual_box_plot(ax, plot_index, alpha_leg, line_color)
-
-        ax.set_xticks(range(1, len(leg_ordered) + 1))
-        ax.set_xticklabels(
-            [tracks[track_index]["name"] for track_index, _, _ in leg_ordered],
-            rotation=45,
-            ha="right",
-        )
-        ax.set_xlim(0.5, len(leg_ordered) + 0.5)
-        ax.set_ylim(0, 1)
-        ax.set_ylabel(r"$\alpha$ (rel. speed)")
-        ax.set_title(leg_labels[leg_index])
-        if export_dir is not None:
-            export_dir.mkdir(parents=True, exist_ok=True)
-            safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
-            output_path = export_dir / f"alpha-leg-{leg_index + 1:02d}-{safe_label}.pdf"
-            fig.savefig(output_path, bbox_inches="tight")
 
 
 def plot_speed_delta_box_plot(
@@ -1366,129 +1268,6 @@ def plot_speed_range_along_route(
         export_path = Path(export_path)
         export_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(export_path, bbox_inches="tight")
-
-
-def plot_alpha_pdf_by_boat(tracks, bin_count, smoothing_window):
-    """Plot a smooth PDF-style histogram of alpha per boat."""
-    all_alpha = []
-    for track in tracks:
-        alpha_values = track["alpha"]
-        alpha_values = alpha_values[np.isfinite(alpha_values)]
-        all_alpha.extend(alpha_values.tolist())
-    if not all_alpha:
-        return
-
-    bin_edges = np.linspace(0, 1, bin_count + 1)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    bin_width = bin_edges[1] - bin_edges[0]
-
-    fig, ax = plt.subplots()
-    sh.maximize_figure(fig)
-    ax.grid(True)
-
-    for track in tracks:
-        alpha_values = track["alpha"]
-        alpha_values = alpha_values[np.isfinite(alpha_values)]
-        if alpha_values.size == 0:
-            continue
-        counts, _ = np.histogram(alpha_values, bins=bin_edges)
-        if counts.sum() == 0:
-            continue
-        density = counts / (counts.sum() * bin_width)
-        density = sh.smooth_moving_average(density, smoothing_window)
-
-        line_color = track["color"] or (0.5, 0.5, 0.5)
-        ax.plot(bin_centers, density, color=line_color, linewidth=1.2, label=track["name"])
-
-    ax.set_xlabel(r"$\alpha$")
-    ax.set_ylabel(r"$\mathrm{PDF}$")
-    ax.set_title(r"$\alpha$ distribution by boat")
-    ax.set_xlim(0, 1)
-    ax.legend(loc="best")
-
-
-def plot_speed_histogram_by_boat(tracks, route_sample_count, bin_count, smoothing_window, progress_sample_count):
-    """Plot PDF-style speed histograms by boat, resampled by progress."""
-    if route_sample_count < 2:
-        return
-
-    if progress_sample_count < 2:
-        progress_sample_count = min(2000, route_sample_count)
-
-    progress_grid = np.linspace(0, 1, progress_sample_count)
-    speed_samples_by_track = []
-    all_speed_samples = []
-
-    for track in tracks:
-        route_index = track["routeIdx"]
-        speed = track["speed"]
-        valid_mask = (
-            np.isfinite(route_index)
-            & np.isfinite(speed)
-            & (route_index >= 1)
-            & (route_index <= route_sample_count)
-        )
-        if not valid_mask.any():
-            speed_samples_by_track.append(np.array([]))
-            continue
-
-        progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
-        speed_valid = speed[valid_mask]
-
-        progress_unique, unique_index = np.unique(progress, return_index=True)
-        speed_unique = speed_valid[unique_index]
-        if progress_unique.size < 2:
-            speed_samples_by_track.append(np.array([]))
-            continue
-
-        sort_index = np.argsort(progress_unique)
-        progress_unique = progress_unique[sort_index]
-        speed_unique = speed_unique[sort_index]
-
-        speed_on_grid = np.interp(progress_grid, progress_unique, speed_unique)
-        outside_mask = (progress_grid < progress_unique[0]) | (progress_grid > progress_unique[-1])
-        speed_on_grid[outside_mask] = np.nan
-
-        speed_samples_by_track.append(speed_on_grid)
-        valid_samples = speed_on_grid[np.isfinite(speed_on_grid)]
-        all_speed_samples.extend(valid_samples.tolist())
-
-    if not all_speed_samples:
-        return
-
-    min_speed = min(all_speed_samples)
-    max_speed = max(all_speed_samples)
-    if min_speed == max_speed:
-        min_speed -= 0.5
-        max_speed += 0.5
-
-    bin_edges = np.linspace(min_speed, max_speed, bin_count + 1)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    bin_width = bin_edges[1] - bin_edges[0]
-
-    fig, ax = plt.subplots()
-    sh.maximize_figure(fig)
-    ax.grid(True)
-
-    for track, speed_samples in zip(tracks, speed_samples_by_track):
-        if speed_samples.size == 0:
-            continue
-        valid_mask = np.isfinite(speed_samples)
-        if not valid_mask.any():
-            continue
-        counts, _ = np.histogram(speed_samples[valid_mask], bins=bin_edges)
-        if counts.sum() == 0:
-            continue
-        density = counts / (counts.sum() * bin_width)
-        density = sh.smooth_moving_average(density, smoothing_window)
-
-        line_color = track["color"] or (0.5, 0.5, 0.5)
-        ax.plot(bin_centers, density, color=line_color, linewidth=1.2, label=track["name"])
-
-    ax.set_xlabel(r"$v\,[\mathrm{kn}]$")
-    ax.set_ylabel(r"$\mathrm{PDF}$")
-    ax.set_title(r"$v$ distribution by boat (progress-sampled)")
-    ax.legend(loc="best")
 
 
 def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
