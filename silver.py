@@ -17,75 +17,42 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 import silver_helpers as sh
 
 def main():
-    # --- Input data ---
-    filename = str(Path("data") / "silverrudder_2025" / "Silverrudder 2025_Keelboats Small_gps_data.csv")
+    data_root = Path("data") / "silverrudder_2025"
+    filename = str(data_root / "Silverrudder 2025_Keelboats Small_gps_data.csv")
+    metadata_path = data_root / "race_metadata.json"
 
-    # --- Metadata ---
-    metadata_path = Path("data") / "silverrudder_2025" / "race_metadata.json"
     race_meta = sh.load_race_metadata(metadata_path)
+    track_id_keys = race_meta["track_id_keys"]
+    boat_names = race_meta["boat_names"]
 
-    trackIdKeys = race_meta["track_id_keys"]
-    boatNames = race_meta["boat_names"]
-
-    # Read CSV into a dict-of-columns, then build per-boat tracks
-    trackingData = sh.read_tracking_csv_as_struct(filename)
-    tracks = sh.build_tracks(
-        trackingData,
-        "tracked_object_id",
-        "Latitude",
-        "Longitude",
-        "SampleTime",
-        "Speed",
-    )
-
-    # Convert speed from km/h to knots (apply once before any calculations)
-    tracks = sh.convert_speed_to_knots(tracks)
-
-    # --- Assign human-readable names to tracks (keyed by tracked_object_id) ---
-    trackNameMap = dict(zip(trackIdKeys, boatNames))
-    tracks = sh.apply_track_names(tracks, trackNameMap)
-
-    localOffsetHours = race_meta.get("local_offset_hours", 0)
-    startTimeLocal = race_meta.get("start_time_local", "")
-    startTimeUtc = sh.parse_local_time_to_utc(startTimeLocal, localOffsetHours)
-    if startTimeUtc is None:
-        raise ValueError("start_time_local missing or invalid in race_metadata.json")
+    tracks = load_tracks_from_csv(filename, track_id_keys, boat_names)
+    start_time_utc = parse_start_time_utc(race_meta)
 
     geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
-    _, waypoint_gates = sh.load_geo_data(geo_data_path)
-    start_gate_pos, finish_gate_pos = sh.find_start_finish_gate_positions(waypoint_gates)
-    first_leg_gate_pos = start_gate_pos + 1
-    if first_leg_gate_pos >= len(waypoint_gates):
-        raise ValueError("No waypoint available after Start for first leg.")
+    waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos = load_waypoint_gates(
+        geo_data_path
+    )
     gate_times_by_track = sh.compute_gate_crossings(tracks, waypoint_gates)
     tracks = sh.trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
+    tracks = apply_track_colors_from_metadata(tracks, boat_names, race_meta)
 
-    boatColors = race_meta.get("boat_colors", {})
-    trackColorMap = sh.build_boat_color_map(boatNames, boatColors)
-    tracks = sh.apply_track_colors(tracks, trackColorMap)
-
-    # --- Average route and mapping ---
-    routeSampleCount = 20000
-    averageRoute = sh.compute_average_route(routeSampleCount, geo_data_path)
-
-    routeSearchWindowHalfWidth = 200
-
-    tracks = sh.map_track_points_to_route(tracks, averageRoute, routeSearchWindowHalfWidth)
-    tracks = sh.remove_route_index_spikes(tracks, routeSampleCount)
-
-    wayPointProgress, wayPointNames = sh.compute_waypoint_progress_from_gates(
-        averageRoute, waypoint_gates
+    route_sample_count = 20000
+    route_search_window_half_width = 200
+    tracks, average_route = prepare_route_mapping(
+        tracks, geo_data_path, route_sample_count, route_search_window_half_width
     )
 
-    # --- Route-sample window normalization (per-sample alpha) ---
-    windowSampleCount = 50
-    windowStepSamples = 1
-    filterAlpha = 0.01
-    tracks, speedWindowStats = sh.compute_sample_alpha_by_route_windows(
-        tracks, routeSampleCount, windowSampleCount, windowStepSamples, filterAlpha
+    way_point_progress, way_point_names = sh.compute_waypoint_progress_from_gates(
+        average_route, waypoint_gates
     )
 
-    # --- Plots ---
+    window_sample_count = 50
+    window_step_samples = 1
+    filter_alpha = 0.01
+    tracks, speed_window_stats = compute_speed_window_stats(
+        tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
+    )
+
     export_pdf = True
     export_pdf_dir = Path("documentation") / "figures"
 
@@ -97,16 +64,16 @@ def main():
     show_pace_range_plot = True
 
     if show_map_plot:
-        plot_colored_tracks(tracks, averageRoute, speedWindowStats, wayPointProgress, wayPointNames)
+        plot_colored_tracks(tracks, average_route, speed_window_stats, way_point_progress, way_point_names)
 
     if show_pace_box_plots:
         plot_pace_delta_box_plot(
             tracks,
-            speedWindowStats,
-            wayPointProgress,
-            wayPointNames,
-            averageRoute,
-            startTimeUtc,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
             first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
         )
@@ -114,11 +81,11 @@ def main():
     if show_pace_box_plots_by_boat:
         plot_pace_delta_box_plot_by_boat(
             tracks,
-            speedWindowStats,
-            wayPointProgress,
-            wayPointNames,
-            averageRoute,
-            startTimeUtc,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
             first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
             latex_include_path=(
@@ -129,11 +96,11 @@ def main():
     if show_speed_box_plots:
         plot_speed_delta_box_plot(
             tracks,
-            speedWindowStats,
-            wayPointProgress,
-            wayPointNames,
-            averageRoute,
-            startTimeUtc,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
             first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
         )
@@ -141,11 +108,11 @@ def main():
     if show_speed_box_plots_by_boat:
         plot_speed_delta_box_plot_by_boat(
             tracks,
-            speedWindowStats,
-            wayPointProgress,
-            wayPointNames,
-            averageRoute,
-            startTimeUtc,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
             first_leg_gate_pos,
             export_dir=export_pdf_dir if export_pdf else None,
         )
@@ -153,78 +120,407 @@ def main():
     if show_pace_range_plot:
         plot_speed_range_along_route(
             tracks,
-            speedWindowStats,
-            wayPointProgress,
-            wayPointNames,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
             export_path=(export_pdf_dir / "pace-range-along-route.pdf") if export_pdf else None,
         )
 
     plt.show()
 
 
-def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_progress, waypoint_names):
-    """Plot each competitor track colored by local relative speed."""
-    previous_usetex = matplotlib.rcParams.get("text.usetex", False)
-    matplotlib.rcParams["text.usetex"] = False
-    fig, ax = plt.subplots()
-    sh.maximize_figure(fig)
-    ax.grid(True)
-    sh.apply_local_meter_aspect(ax, average_route)
-
-    plot_coast_geojson_cropped(ax, tracks, "ne_10m_coastline.geojson", 0.15)
-
-    waypoint_progress = np.asarray(waypoint_progress, dtype=float)
-    waypoint_names = list(waypoint_names) if waypoint_names is not None else []
-    if len(waypoint_names) < waypoint_progress.size:
-        waypoint_names += [""] * (waypoint_progress.size - len(waypoint_names))
-    if len(waypoint_names) > waypoint_progress.size:
-        waypoint_names = waypoint_names[: waypoint_progress.size]
-
-    waypoint_mask = np.isfinite(waypoint_progress)
-    waypoint_progress = waypoint_progress[waypoint_mask]
-    waypoint_names = [name for name, keep in zip(waypoint_names, waypoint_mask) if keep]
-    waypoint_progress = waypoint_progress[(waypoint_progress >= 0) & (waypoint_progress <= 1)]
-
-    rhumb_line, = ax.plot(
-        average_route["lon"],
-        average_route["lat"],
-        color=(0, 0.6, 1),
-        linewidth=5.0,
-        label="Rhumb line",
+def load_tracks_from_csv(filename, track_id_keys, boat_names):
+    """Load, group, and name tracks from the tracking CSV."""
+    tracking_data = sh.read_tracking_csv_as_struct(filename)
+    tracks = sh.build_tracks(
+        tracking_data,
+        "tracked_object_id",
+        "Latitude",
+        "Longitude",
+        "SampleTime",
+        "Speed",
     )
-    rhumb_line.set_picker(True)
-    rhumb_line.set_pickradius(6)
+    tracks = sh.convert_speed_to_knots(tracks)
+    track_name_map = dict(zip(track_id_keys, boat_names))
+    return sh.apply_track_names(tracks, track_name_map)
 
-    if waypoint_progress.size:
-        route_count = len(average_route["lat"])
-        waypoint_indices = np.unique(
-            np.clip(np.rint(waypoint_progress * (route_count - 1)).astype(int), 0, route_count - 1)
+
+def parse_start_time_utc(race_meta):
+    """Parse the race start time from metadata into UTC seconds."""
+    local_offset_hours = race_meta.get("local_offset_hours", 0)
+    start_time_local = race_meta.get("start_time_local", "")
+    start_time_utc = sh.parse_local_time_to_utc(start_time_local, local_offset_hours)
+    if start_time_utc is None:
+        raise ValueError("start_time_local missing or invalid in race_metadata.json")
+    return start_time_utc
+
+
+def load_waypoint_gates(geo_data_path):
+    """Load waypoint gates and locate start/finish indices."""
+    _, waypoint_gates = sh.load_geo_data(geo_data_path)
+    start_gate_pos, finish_gate_pos = sh.find_start_finish_gate_positions(waypoint_gates)
+    first_leg_gate_pos = start_gate_pos + 1
+    if first_leg_gate_pos >= len(waypoint_gates):
+        raise ValueError("No waypoint available after Start for first leg.")
+    return waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos
+
+
+def apply_track_colors_from_metadata(tracks, boat_names, race_meta):
+    """Attach per-boat colors from metadata to the tracks."""
+    boat_colors = race_meta.get("boat_colors", {})
+    track_color_map = sh.build_boat_color_map(boat_names, boat_colors)
+    return sh.apply_track_colors(tracks, track_color_map)
+
+
+def prepare_route_mapping(tracks, geo_data_path, route_sample_count, search_window_half_width):
+    """Compute the rhumb line and map track points to route indices."""
+    average_route = sh.compute_average_route(route_sample_count, geo_data_path)
+    tracks = sh.map_track_points_to_route(tracks, average_route, search_window_half_width)
+    tracks = sh.remove_route_index_spikes(tracks, route_sample_count)
+    return tracks, average_route
+
+
+def compute_speed_window_stats(
+    tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
+):
+    """Compute per-window min/max/mean and per-sample alpha."""
+    return sh.compute_sample_alpha_by_route_windows(
+        tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
+    )
+
+
+def normalize_waypoint_series(waypoint_progress, waypoint_names):
+    """Return finite waypoint progress values with a padded label list."""
+    progress_values = np.asarray(waypoint_progress, dtype=float).flatten()
+    label_values = list(waypoint_names) if waypoint_names is not None else []
+
+    if label_values and progress_values.size:
+        if len(label_values) < progress_values.size:
+            label_values += [""] * (progress_values.size - len(label_values))
+        if len(label_values) > progress_values.size:
+            label_values = label_values[: progress_values.size]
+
+    finite_mask = np.isfinite(progress_values)
+    progress_values = progress_values[finite_mask]
+    label_values = [label for label, keep in zip(label_values, finite_mask) if keep]
+    return progress_values, label_values
+
+
+def filter_waypoints_to_unit_interval(progress_values, label_values):
+    """Clamp waypoint progress to [0, 1] and keep labels aligned."""
+    in_range_mask = (progress_values >= 0) & (progress_values <= 1)
+    return progress_values[in_range_mask], [
+        label for label, keep in zip(label_values, in_range_mask) if keep
+    ]
+
+
+def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names):
+    """Draw waypoint markers and labels along the rhumb line."""
+    progress_values, label_values = normalize_waypoint_series(waypoint_progress, waypoint_names)
+    progress_values, label_values = filter_waypoints_to_unit_interval(
+        progress_values, label_values
+    )
+    if progress_values.size == 0:
+        return
+
+    route_count = len(average_route["lat"])
+    if route_count == 0:
+        return
+
+    waypoint_indices = np.unique(
+        np.clip(np.rint(progress_values * (route_count - 1)).astype(int), 0, route_count - 1)
+    )
+    waypoint_lon = np.asarray(average_route["lon"])[waypoint_indices]
+    waypoint_lat = np.asarray(average_route["lat"])[waypoint_indices]
+    ax.scatter(waypoint_lon, waypoint_lat, s=90, color="black", zorder=5)
+
+    for progress_value, name in zip(progress_values, label_values):
+        if not name:
+            continue
+        point_index = int(round(progress_value * (route_count - 1)))
+        point_index = max(0, min(route_count - 1, point_index))
+        ax.annotate(
+            name,
+            (average_route["lon"][point_index], average_route["lat"][point_index]),
+            textcoords="offset points",
+            xytext=(6, 6),
+            fontsize=9,
+            color="black",
+            zorder=6,
         )
-        waypoint_lon = np.asarray(average_route["lon"])[waypoint_indices]
-        waypoint_lat = np.asarray(average_route["lat"])[waypoint_indices]
-        ax.scatter(waypoint_lon, waypoint_lat, s=90, color="black", zorder=5)
 
-        for progress_value, name in zip(waypoint_progress, waypoint_names):
-            if not name:
-                continue
-            point_index = int(round(progress_value * (route_count - 1)))
-            point_index = max(0, min(route_count - 1, point_index))
-            ax.annotate(
-                name,
-                (average_route["lon"][point_index], average_route["lat"][point_index]),
-                textcoords="offset points",
-                xytext=(6, 6),
-                fontsize=9,
-                color="black",
-                zorder=6,
-            )
 
+def build_leg_labels(progress_values, waypoint_labels):
+    """Create leg labels from consecutive waypoint names."""
+    leg_labels = []
+    for leg_index in range(len(progress_values) - 1):
+        if leg_index + 1 < len(waypoint_labels):
+            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
+        else:
+            leg_labels.append(f"Leg {leg_index + 1}")
+    return leg_labels
+
+
+def get_leg_bounds(progress_values, leg_index):
+    """Return ordered start/end bounds for a leg index."""
+    leg_start = progress_values[leg_index]
+    leg_end = progress_values[leg_index + 1]
+    if leg_start > leg_end:
+        leg_start, leg_end = leg_end, leg_start
+    return leg_start, leg_end
+
+
+def compute_first_leg_distance_m(average_route, progress_values):
+    """Compute first-leg distance in meters from the rhumb line."""
+    if len(progress_values) < 2:
+        return np.nan
+
+    route_distance_m = sh.cumulative_distance_meters(
+        np.asarray(average_route["lat"], dtype=float),
+        np.asarray(average_route["lon"], dtype=float),
+    )[-1]
+    if not np.isfinite(route_distance_m) or route_distance_m <= 0:
+        return np.nan
+    return abs(progress_values[1] - progress_values[0]) * route_distance_m
+
+
+def compute_first_leg_delta(values_by_track):
+    """Return per-track delta from the mean for the first-leg metric."""
+    if values_by_track.size:
+        mean_value = float(np.nanmean(values_by_track))
+    else:
+        mean_value = np.nan
+    return values_by_track - mean_value
+
+
+def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index, first_leg_value):
+    """Extract samples for a specific leg, or the first-leg scalar value."""
+    if leg_index == 0:
+        if not np.isfinite(first_leg_value):
+            return None
+        return np.asarray([first_leg_value], dtype=float)
+
+    if progress.size == 0:
+        return None
+
+    leg_start, leg_end = get_leg_bounds(progress_values, leg_index)
+    leg_mask = (progress >= leg_start) & (progress <= leg_end)
+    leg_samples = delta_values[leg_mask]
+    if leg_samples.size == 0:
+        return None
+    return leg_samples
+
+
+def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, leg_index, first_leg_delta_by_track):
+    """Order tracks by mean value within a leg."""
+    leg_ordered = []
+    for track_index, (progress, delta_values) in enumerate(
+        zip(track_progress_by_track, delta_by_track)
+    ):
+        first_leg_value = first_leg_delta_by_track[track_index]
+        leg_samples = get_leg_samples_for_track(
+            progress, delta_values, progress_values, leg_index, first_leg_value
+        )
+        if leg_samples is None:
+            continue
+        leg_ordered.append((track_index, float(np.mean(leg_samples)), leg_samples))
+    return leg_ordered
+
+
+def compute_whisker_bounds(samples):
+    """Compute Tukey whisker bounds for a sample vector."""
+    clean_samples = samples[np.isfinite(samples)]
+    if clean_samples.size == 0:
+        return None
+    quartiles, _ = sh.quantiles_no_toolbox(clean_samples, [0.25, 0.5, 0.75])
+    q1 = float(quartiles[0])
+    q3 = float(quartiles[2])
+    if not np.isfinite(q1) or not np.isfinite(q3):
+        return None
+    iqr_value = q3 - q1
+    lower_bound = q1 - 1.5 * iqr_value
+    upper_bound = q3 + 1.5 * iqr_value
+    lower_candidates = clean_samples[clean_samples >= lower_bound]
+    upper_candidates = clean_samples[clean_samples <= upper_bound]
+    lower_whisker = float(np.min(lower_candidates)) if lower_candidates.size else float(np.min(clean_samples))
+    upper_whisker = float(np.max(upper_candidates)) if upper_candidates.size else float(np.max(clean_samples))
+    return lower_whisker, upper_whisker
+
+
+def update_whisker_range(current_lower, current_upper, samples):
+    """Expand a (lower, upper) range using whisker bounds from samples."""
+    bounds = compute_whisker_bounds(samples)
+    if bounds is None:
+        return current_lower, current_upper
+    return min(current_lower, bounds[0]), max(current_upper, bounds[1])
+
+
+def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg_value):
+    """Return whisker bounds for all legs for a single track."""
+    local_lower = np.inf
+    local_upper = -np.inf
+    for leg_index in range(len(progress_values) - 1):
+        leg_samples = get_leg_samples_for_track(
+            progress, delta_values, progress_values, leg_index, first_leg_value
+        )
+        if leg_samples is None:
+            continue
+        local_lower, local_upper = update_whisker_range(local_lower, local_upper, leg_samples)
+    if not np.isfinite(local_lower) or not np.isfinite(local_upper):
+        return None
+    return local_lower, local_upper
+
+
+def compute_global_plot_range(global_lower, global_upper):
+    """Expand global plot bounds with padding."""
+    if not np.isfinite(global_lower) or not np.isfinite(global_upper):
+        return None
+    global_range = global_upper - global_lower
+    if global_range <= 0:
+        return -1.0, 1.0, 2.0
+    padding = 0.05 * global_range
+    global_lower -= padding
+    global_upper += padding
+    global_range = global_upper - global_lower
+    return global_lower, global_upper, global_range
+
+
+def compute_local_plot_range(local_lower, local_upper, global_range):
+    """Expand local plot bounds with padding and a minimum span."""
+    local_range = local_upper - local_lower
+    if local_range <= 0:
+        local_range = max(global_range * 0.02, 1.0)
+        mid_point = (local_lower + local_upper) / 2.0
+        local_lower = mid_point - 0.5 * local_range
+        local_upper = mid_point + 0.5 * local_range
+        return local_lower, local_upper, local_range
+
+    padding = 0.02 * local_range
+    local_lower -= padding
+    local_upper += padding
+    local_range = local_upper - local_lower
+    return local_lower, local_upper, local_range
+
+
+def compute_units_per_inch(global_range):
+    """Return y-axis units per inch based on default figure height."""
+    base_figsize = plt.rcParams.get("figure.figsize", (6.4, 4.8))
+    base_height = float(base_figsize[1]) if len(base_figsize) > 1 else 4.8
+    return global_range / base_height if global_range > 0 else 1.0
+
+
+def resize_figure_for_range(fig, units_per_inch, local_range):
+    """Resize figure height to keep units-per-inch consistent."""
+    fig_width = fig.get_size_inches()[0]
+    fig_height = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
+    fig.set_size_inches(fig_width, fig_height, forward=True)
+
+
+def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
+    """Replace progress ticks with waypoint labels plus Start/Finish."""
+    progress_values, label_values = normalize_waypoint_series(waypoint_progress, waypoint_names)
+    if progress_values.size == 0:
+        ax.set_xticks([0.0, 1.0])
+        ax.set_xticklabels(["Start", "Finish"], rotation=45, ha="right")
+        return
+
+    progress_values = np.clip(progress_values, 0.0, 1.0)
+    tolerance = 1e-6
+
+    def is_start_finish_label(label_text):
+        label_text = str(label_text).strip().lower()
+        return label_text.startswith("start") or label_text.startswith("finish")
+
+    filtered_progress = []
+    filtered_labels = []
+    for value, label in zip(progress_values.tolist(), label_values):
+        if is_start_finish_label(label):
+            continue
+        filtered_progress.append(value)
+        filtered_labels.append(label)
+
+    filtered_progress.extend([0.0, 1.0])
+    filtered_labels.extend(["Start", "Finish"])
+
+    progress_values = np.asarray(filtered_progress, dtype=float)
+    label_values = [filtered_labels[idx] for idx in np.argsort(progress_values)]
+    progress_values = np.sort(progress_values)
+
+    merged_progress = []
+    merged_labels = []
+    for progress_value, label in zip(progress_values, label_values):
+        if abs(progress_value - 0.0) <= tolerance:
+            label = "Start"
+        if abs(progress_value - 1.0) <= tolerance:
+            label = "Finish"
+        if not merged_progress:
+            merged_progress.append(progress_value)
+            merged_labels.append(label)
+            continue
+        if abs(progress_value - merged_progress[-1]) <= tolerance:
+            if label:
+                if abs(progress_value - 0.0) <= tolerance:
+                    merged_labels[-1] = "Start"
+                elif abs(progress_value - 1.0) <= tolerance:
+                    merged_labels[-1] = "Finish"
+                elif merged_labels[-1]:
+                    merged_labels[-1] = f"{merged_labels[-1]} / {label}"
+                else:
+                    merged_labels[-1] = label
+            continue
+        merged_progress.append(progress_value)
+        merged_labels.append(label)
+
+    if matplotlib.rcParams.get("text.usetex", False):
+        merged_labels = [sh.escape_latex_text(lbl) for lbl in merged_labels]
+
+    ax.set_xticks(merged_progress)
+    ax.set_xticklabels(merged_labels, rotation=45, ha="right")
+
+
+def resample_track_speed(track, window_progress, route_sample_count, filter_alpha):
+    """Resample and low-pass a track's speed onto the window progress grid."""
+    route_index = track["routeIdx"]
+    speed = track["speed"]
+    valid_mask = (
+        np.isfinite(route_index)
+        & np.isfinite(speed)
+        & (speed > 0)
+        & (route_index >= 1)
+        & (route_index <= route_sample_count)
+    )
+    if not valid_mask.any():
+        return None
+
+    progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
+    speed_valid = speed[valid_mask]
+    progress_unique, unique_index = np.unique(progress, return_index=True)
+    speed_unique = speed_valid[unique_index]
+    if progress_unique.size < 2:
+        return None
+
+    sort_index = np.argsort(progress_unique)
+    progress_unique = progress_unique[sort_index]
+    speed_unique = speed_unique[sort_index]
+
+    speed_on_grid = np.interp(window_progress, progress_unique, speed_unique)
+    outside_mask = (window_progress < progress_unique[0]) | (window_progress > progress_unique[-1])
+    speed_on_grid[outside_mask] = np.nan
+    return sh.lowpass_forward_backward(speed_on_grid, filter_alpha)
+
+
+def build_alpha_colormap():
+    """Return the trimmed 'hot' colormap and normalization for alpha."""
     base_cmap = plt.get_cmap("hot", 256)
     cmap_colors = base_cmap(np.linspace(0, 229 / 255, 230))
     cmap_colors[0, :] = np.array([0, 0, 0, 1])
     cmap = LinearSegmentedColormap.from_list("hot_trim", cmap_colors)
     norm = Normalize(0, 1)
+    return cmap, norm
 
+
+def add_alpha_tracks(ax, tracks, cmap, norm):
+    """Add alpha-colored line collections to the map."""
     line_collections = []
     for track in tracks:
         longitude = track["lon"]
@@ -239,9 +535,7 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
         segments = np.stack([points[:-1], points[1:]], axis=1)
         segment_values = alpha_values[:-1]
 
-        line_collection = LineCollection(
-            segments, cmap=cmap, norm=norm, linewidths=1.5
-        )
+        line_collection = LineCollection(segments, cmap=cmap, norm=norm, linewidths=1.5)
         line_collection.set_array(segment_values)
         line_collection.set_picker(True)
         line_collection.set_pickradius(6)
@@ -249,6 +543,35 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
         line_collection.track_speed = track["speed"]
         ax.add_collection(line_collection)
         line_collections.append(line_collection)
+
+    return line_collections
+
+
+def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_progress, waypoint_names):
+    """Plot each competitor track colored by local relative speed."""
+    previous_usetex = matplotlib.rcParams.get("text.usetex", False)
+    matplotlib.rcParams["text.usetex"] = False
+    fig, ax = plt.subplots()
+    sh.maximize_figure(fig)
+    ax.grid(True)
+    sh.apply_local_meter_aspect(ax, average_route)
+
+    plot_coast_geojson_cropped(ax, tracks, "ne_10m_coastline.geojson", 0.15)
+
+    rhumb_line, = ax.plot(
+        average_route["lon"],
+        average_route["lat"],
+        color=(0, 0.6, 1),
+        linewidth=5.0,
+        label="Rhumb line",
+    )
+    rhumb_line.set_picker(True)
+    rhumb_line.set_pickradius(6)
+
+    plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names)
+
+    cmap, norm = build_alpha_colormap()
+    add_alpha_tracks(ax, tracks, cmap, norm)
 
     scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     scalar_mappable.set_array([])
@@ -285,60 +608,26 @@ def plot_speed_delta_box_plot(
     if leg_count < 1 or not tracks:
         return
 
-    route_distance_m = sh.cumulative_distance_meters(
-        np.asarray(average_route["lat"], dtype=float),
-        np.asarray(average_route["lon"], dtype=float),
-    )[-1]
-    first_leg_distance_m = np.nan
-    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
-        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    leg_labels = build_leg_labels(progress_values, waypoint_labels)
+
+    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_speed_by_track = compute_first_leg_speed_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
-    if first_leg_speed_by_track.size:
-        first_leg_mean = float(np.nanmean(first_leg_speed_by_track))
-    else:
-        first_leg_mean = np.nan
-    first_leg_delta_by_track = first_leg_speed_by_track - first_leg_mean
-
-    track_count = len(tracks)
-    leg_labels = []
-    for leg_index in range(leg_count):
-        if leg_index + 1 < len(waypoint_labels):
-            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
-        else:
-            leg_labels.append(f"Leg {leg_index + 1}")
+    first_leg_delta_by_track = compute_first_leg_delta(first_leg_speed_by_track)
 
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        apply_pace_boxplot_axis_style(ax)
+        apply_boxplot_axis_style(ax)
 
-        leg_start = progress_values[leg_index]
-        leg_end = progress_values[leg_index + 1]
-        if leg_start > leg_end:
-            leg_start, leg_end = leg_end, leg_start
-
-        leg_ordered = []
-        if leg_index == 0:
-            for track_index in range(track_count):
-                speed_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(speed_delta_value):
-                    continue
-                leg_ordered.append((track_index, float(speed_delta_value), speed_delta_value))
-        else:
-            for track_index, (progress, speed_delta) in enumerate(
-                zip(track_progress_by_track, speed_delta_by_track)
-            ):
-                if progress.size == 0:
-                    continue
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                speed_leg = speed_delta[leg_mask]
-                if speed_leg.size == 0:
-                    continue
-
-                leg_ordered.append((track_index, float(np.mean(speed_leg)), speed_leg))
-
+        leg_ordered = build_leg_ordered(
+            track_progress_by_track,
+            speed_delta_by_track,
+            progress_values,
+            leg_index,
+            first_leg_delta_by_track,
+        )
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
             continue
@@ -396,90 +685,34 @@ def plot_speed_delta_box_plot_by_boat(
     if leg_count < 1 or not tracks:
         return
 
-    route_distance_m = sh.cumulative_distance_meters(
-        np.asarray(average_route["lat"], dtype=float),
-        np.asarray(average_route["lon"], dtype=float),
-    )[-1]
-    first_leg_distance_m = np.nan
-    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
-        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_speed_by_track = compute_first_leg_speed_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
-    if first_leg_speed_by_track.size:
-        first_leg_mean = float(np.nanmean(first_leg_speed_by_track))
-    else:
-        first_leg_mean = np.nan
-    first_leg_delta_by_track = first_leg_speed_by_track - first_leg_mean
+    first_leg_delta_by_track = compute_first_leg_delta(first_leg_speed_by_track)
 
-    leg_labels = []
-    for leg_index in range(leg_count):
-        if leg_index + 1 < len(waypoint_labels):
-            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
-        else:
-            leg_labels.append(f"Leg {leg_index + 1}")
+    leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
-    def compute_whisker_bounds(samples):
-        clean_samples = samples[np.isfinite(samples)]
-        if clean_samples.size == 0:
-            return None
-        quartiles, _ = sh.quantiles_no_toolbox(clean_samples, [0.25, 0.5, 0.75])
-        q1 = float(quartiles[0])
-        q3 = float(quartiles[2])
-        if not np.isfinite(q1) or not np.isfinite(q3):
-            return None
-        iqr_value = q3 - q1
-        lower_bound = q1 - 1.5 * iqr_value
-        upper_bound = q3 + 1.5 * iqr_value
-        lower_candidates = clean_samples[clean_samples >= lower_bound]
-        upper_candidates = clean_samples[clean_samples <= upper_bound]
-        lower_whisker = float(np.min(lower_candidates)) if lower_candidates.size else float(np.min(clean_samples))
-        upper_whisker = float(np.max(upper_candidates)) if upper_candidates.size else float(np.max(clean_samples))
-        return lower_whisker, upper_whisker
-
-    global_lower = np.inf
-    global_upper = -np.inf
+    global_lower = float("inf")
+    global_upper = float("-inf")
     for track_index, (progress, speed_delta) in enumerate(
         zip(track_progress_by_track, speed_delta_by_track)
     ):
         if progress.size == 0:
             continue
-        for leg_index in range(leg_count):
-            if leg_index == 0:
-                speed_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(speed_delta_value):
-                    continue
-                speed_leg = np.array([speed_delta_value], dtype=float)
-            else:
-                leg_start = progress_values[leg_index]
-                leg_end = progress_values[leg_index + 1]
-                if leg_start > leg_end:
-                    leg_start, leg_end = leg_end, leg_start
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                speed_leg = speed_delta[leg_mask]
-                if speed_leg.size == 0:
-                    continue
-            whisker_bounds = compute_whisker_bounds(speed_leg)
-            if whisker_bounds is None:
-                continue
-            global_lower = min(global_lower, whisker_bounds[0])
-            global_upper = max(global_upper, whisker_bounds[1])
+        leg_range = compute_leg_whisker_range(
+            progress, speed_delta, progress_values, first_leg_delta_by_track[track_index]
+        )
+        if leg_range is None:
+            continue
+        global_lower = min(global_lower, leg_range[0])
+        global_upper = max(global_upper, leg_range[1])
 
-    if not np.isfinite(global_lower) or not np.isfinite(global_upper):
+    global_range_result = compute_global_plot_range(global_lower, global_upper)
+    if global_range_result is None:
         return
-    global_range = global_upper - global_lower
-    if global_range <= 0:
-        global_lower, global_upper = -1.0, 1.0
-        global_range = global_upper - global_lower
-    else:
-        padding = 0.05 * global_range
-        global_lower -= padding
-        global_upper += padding
-        global_range = global_upper - global_lower
-
-    base_figsize = plt.rcParams.get("figure.figsize", (6.4, 4.8))
-    base_height = float(base_figsize[1]) if len(base_figsize) > 1 else 4.8
-    units_per_inch = global_range / base_height if global_range > 0 else 1.0
+    global_lower, global_upper, global_range = global_range_result
+    units_per_inch = compute_units_per_inch(global_range)
 
     for track_index, track in enumerate(tracks):
         progress = track_progress_by_track[track_index]
@@ -487,78 +720,42 @@ def plot_speed_delta_box_plot_by_boat(
         if progress.size == 0 or speed_delta.size == 0:
             continue
 
-        local_lower = np.inf
-        local_upper = -np.inf
-        for leg_index in range(leg_count):
-            if leg_index == 0:
-                speed_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(speed_delta_value):
-                    continue
-                speed_leg = np.array([speed_delta_value], dtype=float)
-            else:
-                leg_start = progress_values[leg_index]
-                leg_end = progress_values[leg_index + 1]
-                if leg_start > leg_end:
-                    leg_start, leg_end = leg_end, leg_start
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                speed_leg = speed_delta[leg_mask]
-                if speed_leg.size == 0:
-                    continue
-            whisker_bounds = compute_whisker_bounds(speed_leg)
-            if whisker_bounds is None:
-                continue
-            local_lower = min(local_lower, whisker_bounds[0])
-            local_upper = max(local_upper, whisker_bounds[1])
-
-        if not np.isfinite(local_lower) or not np.isfinite(local_upper):
+        leg_range = compute_leg_whisker_range(
+            progress, speed_delta, progress_values, first_leg_delta_by_track[track_index]
+        )
+        if leg_range is None:
             continue
-
-        local_range = local_upper - local_lower
-        if local_range <= 0:
-            local_range = max(global_range * 0.02, 1.0)
-            mid_point = (local_lower + local_upper) / 2.0
-            local_lower = mid_point - 0.5 * local_range
-            local_upper = mid_point + 0.5 * local_range
-        else:
-            padding = 0.02 * local_range
-            local_lower -= padding
-            local_upper += padding
-            local_range = local_upper - local_lower
+        local_lower, local_upper, local_range = compute_local_plot_range(
+            leg_range[0], leg_range[1], global_range
+        )
 
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        fig_width = fig.get_size_inches()[0]
-        fig_height = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
-        fig.set_size_inches(fig_width, fig_height, forward=True)
-        apply_pace_boxplot_axis_style(ax)
+        resize_figure_for_range(fig, units_per_inch, local_range)
+        apply_boxplot_axis_style(ax)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
         for leg_index in range(leg_count):
+            speed_leg = get_leg_samples_for_track(
+                progress,
+                speed_delta,
+                progress_values,
+                leg_index,
+                first_leg_delta_by_track[track_index],
+            )
+            if speed_leg is None:
+                continue
             if leg_index == 0:
-                speed_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(speed_delta_value):
-                    continue
                 ax.plot(
                     leg_index + 1,
-                    speed_delta_value,
+                    speed_leg,
                     marker="o",
                     markersize=6,
                     color=line_color,
                     linestyle="None",
                 )
-                continue
-
-            leg_start = progress_values[leg_index]
-            leg_end = progress_values[leg_index + 1]
-            if leg_start > leg_end:
-                leg_start, leg_end = leg_end, leg_start
-
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            speed_leg = speed_delta[leg_mask]
-            if speed_leg.size == 0:
-                continue
-
-            sh.draw_manual_box_plot(ax, leg_index + 1, speed_leg, line_color)
+            else:
+                sh.draw_manual_box_plot(ax, leg_index + 1, speed_leg, line_color)
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(leg_labels, rotation=45, ha="right")
@@ -779,8 +976,8 @@ def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, 
     return np.asarray(pace_values, dtype=float)
 
 
-def apply_pace_boxplot_axis_style(ax):
-    """Apply y-axis grid/tick styling for pace box plots."""
+def apply_boxplot_axis_style(ax):
+    """Apply y-axis grid/tick styling for box plots."""
     ax.grid(False)
     ax.yaxis.set_major_locator(MultipleLocator(10))
     ax.yaxis.set_minor_locator(MultipleLocator(2))
@@ -812,60 +1009,26 @@ def plot_pace_delta_box_plot(
     if leg_count < 1 or not tracks:
         return
 
-    route_distance_m = sh.cumulative_distance_meters(
-        np.asarray(average_route["lat"], dtype=float),
-        np.asarray(average_route["lon"], dtype=float),
-    )[-1]
-    first_leg_distance_m = np.nan
-    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
-        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    leg_labels = build_leg_labels(progress_values, waypoint_labels)
+
+    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_pace_by_track = compute_first_leg_pace_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
-    if first_leg_pace_by_track.size:
-        first_leg_mean = float(np.nanmean(first_leg_pace_by_track))
-    else:
-        first_leg_mean = np.nan
-    first_leg_delta_by_track = first_leg_pace_by_track - first_leg_mean
-
-    track_count = len(tracks)
-    leg_labels = []
-    for leg_index in range(leg_count):
-        if leg_index + 1 < len(waypoint_labels):
-            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
-        else:
-            leg_labels.append(f"Leg {leg_index + 1}")
+    first_leg_delta_by_track = compute_first_leg_delta(first_leg_pace_by_track)
 
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        apply_pace_boxplot_axis_style(ax)
+        apply_boxplot_axis_style(ax)
 
-        leg_start = progress_values[leg_index]
-        leg_end = progress_values[leg_index + 1]
-        if leg_start > leg_end:
-            leg_start, leg_end = leg_end, leg_start
-
-        leg_ordered = []
-        if leg_index == 0:
-            for track_index in range(track_count):
-                pace_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(pace_delta_value):
-                    continue
-                leg_ordered.append((track_index, float(pace_delta_value), pace_delta_value))
-        else:
-            for track_index, (progress, pace_delta) in enumerate(
-                zip(track_progress_by_track, pace_delta_by_track)
-            ):
-                if progress.size == 0:
-                    continue
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                pace_leg = pace_delta[leg_mask]
-                if pace_leg.size == 0:
-                    continue
-
-                leg_ordered.append((track_index, float(np.mean(pace_leg)), pace_leg))
-
+        leg_ordered = build_leg_ordered(
+            track_progress_by_track,
+            pace_delta_by_track,
+            progress_values,
+            leg_index,
+            first_leg_delta_by_track,
+        )
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
             continue
@@ -900,6 +1063,7 @@ def plot_pace_delta_box_plot(
             output_path = export_dir / f"pace-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
             fig.savefig(output_path, bbox_inches="tight")
 
+
 def plot_pace_delta_box_plot_by_boat(
     tracks,
     speed_window_stats,
@@ -923,90 +1087,34 @@ def plot_pace_delta_box_plot_by_boat(
     if leg_count < 1 or not tracks:
         return
 
-    route_distance_m = sh.cumulative_distance_meters(
-        np.asarray(average_route["lat"], dtype=float),
-        np.asarray(average_route["lon"], dtype=float),
-    )[-1]
-    first_leg_distance_m = np.nan
-    if leg_count >= 1 and np.isfinite(route_distance_m) and route_distance_m > 0:
-        first_leg_distance_m = abs(progress_values[1] - progress_values[0]) * route_distance_m
+    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_pace_by_track = compute_first_leg_pace_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
-    if first_leg_pace_by_track.size:
-        first_leg_mean = float(np.nanmean(first_leg_pace_by_track))
-    else:
-        first_leg_mean = np.nan
-    first_leg_delta_by_track = first_leg_pace_by_track - first_leg_mean
+    first_leg_delta_by_track = compute_first_leg_delta(first_leg_pace_by_track)
 
-    leg_labels = []
-    for leg_index in range(leg_count):
-        if leg_index + 1 < len(waypoint_labels):
-            leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
-        else:
-            leg_labels.append(f"Leg {leg_index + 1}")
+    leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
-    def compute_whisker_bounds(samples):
-        clean_samples = samples[np.isfinite(samples)]
-        if clean_samples.size == 0:
-            return None
-        quartiles, _ = sh.quantiles_no_toolbox(clean_samples, [0.25, 0.5, 0.75])
-        q1 = float(quartiles[0])
-        q3 = float(quartiles[2])
-        if not np.isfinite(q1) or not np.isfinite(q3):
-            return None
-        iqr_value = q3 - q1
-        lower_bound = q1 - 1.5 * iqr_value
-        upper_bound = q3 + 1.5 * iqr_value
-        lower_candidates = clean_samples[clean_samples >= lower_bound]
-        upper_candidates = clean_samples[clean_samples <= upper_bound]
-        lower_whisker = float(np.min(lower_candidates)) if lower_candidates.size else float(np.min(clean_samples))
-        upper_whisker = float(np.max(upper_candidates)) if upper_candidates.size else float(np.max(clean_samples))
-        return lower_whisker, upper_whisker
-
-    global_lower = np.inf
-    global_upper = -np.inf
+    global_lower = float("inf")
+    global_upper = float("-inf")
     for track_index, (progress, pace_delta) in enumerate(
         zip(track_progress_by_track, pace_delta_by_track)
     ):
         if progress.size == 0:
             continue
-        for leg_index in range(leg_count):
-            if leg_index == 0:
-                pace_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(pace_delta_value):
-                    continue
-                pace_leg = np.array([pace_delta_value], dtype=float)
-            else:
-                leg_start = progress_values[leg_index]
-                leg_end = progress_values[leg_index + 1]
-                if leg_start > leg_end:
-                    leg_start, leg_end = leg_end, leg_start
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                pace_leg = pace_delta[leg_mask]
-                if pace_leg.size == 0:
-                    continue
-            whisker_bounds = compute_whisker_bounds(pace_leg)
-            if whisker_bounds is None:
-                continue
-            global_lower = min(global_lower, whisker_bounds[0])
-            global_upper = max(global_upper, whisker_bounds[1])
+        leg_range = compute_leg_whisker_range(
+            progress, pace_delta, progress_values, first_leg_delta_by_track[track_index]
+        )
+        if leg_range is None:
+            continue
+        global_lower = min(global_lower, leg_range[0])
+        global_upper = max(global_upper, leg_range[1])
 
-    if not np.isfinite(global_lower) or not np.isfinite(global_upper):
+    global_range_result = compute_global_plot_range(global_lower, global_upper)
+    if global_range_result is None:
         return
-    global_range = global_upper - global_lower
-    if global_range <= 0:
-        global_lower, global_upper = -1.0, 1.0
-        global_range = global_upper - global_lower
-    else:
-        padding = 0.05 * global_range
-        global_lower -= padding
-        global_upper += padding
-        global_range = global_upper - global_lower
-
-    base_figsize = plt.rcParams.get("figure.figsize", (6.4, 4.8))
-    base_height = float(base_figsize[1]) if len(base_figsize) > 1 else 4.8
-    units_per_inch = global_range / base_height if global_range > 0 else 1.0
+    global_lower, global_upper, global_range = global_range_result
+    units_per_inch = compute_units_per_inch(global_range)
 
     latex_lines = []
     if latex_include_path is not None:
@@ -1018,78 +1126,42 @@ def plot_pace_delta_box_plot_by_boat(
         if progress.size == 0 or pace_delta.size == 0:
             continue
 
-        local_lower = np.inf
-        local_upper = -np.inf
-        for leg_index in range(leg_count):
-            if leg_index == 0:
-                pace_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(pace_delta_value):
-                    continue
-                pace_leg = np.array([pace_delta_value], dtype=float)
-            else:
-                leg_start = progress_values[leg_index]
-                leg_end = progress_values[leg_index + 1]
-                if leg_start > leg_end:
-                    leg_start, leg_end = leg_end, leg_start
-                leg_mask = (progress >= leg_start) & (progress <= leg_end)
-                pace_leg = pace_delta[leg_mask]
-                if pace_leg.size == 0:
-                    continue
-            whisker_bounds = compute_whisker_bounds(pace_leg)
-            if whisker_bounds is None:
-                continue
-            local_lower = min(local_lower, whisker_bounds[0])
-            local_upper = max(local_upper, whisker_bounds[1])
-
-        if not np.isfinite(local_lower) or not np.isfinite(local_upper):
+        leg_range = compute_leg_whisker_range(
+            progress, pace_delta, progress_values, first_leg_delta_by_track[track_index]
+        )
+        if leg_range is None:
             continue
-
-        local_range = local_upper - local_lower
-        if local_range <= 0:
-            local_range = max(global_range * 0.02, 1.0)
-            mid_point = (local_lower + local_upper) / 2.0
-            local_lower = mid_point - 0.5 * local_range
-            local_upper = mid_point + 0.5 * local_range
-        else:
-            padding = 0.02 * local_range
-            local_lower -= padding
-            local_upper += padding
-            local_range = local_upper - local_lower
+        local_lower, local_upper, local_range = compute_local_plot_range(
+            leg_range[0], leg_range[1], global_range
+        )
 
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        fig_width = fig.get_size_inches()[0]
-        fig_height = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
-        fig.set_size_inches(fig_width, fig_height, forward=True)
-        apply_pace_boxplot_axis_style(ax)
+        resize_figure_for_range(fig, units_per_inch, local_range)
+        apply_boxplot_axis_style(ax)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
         for leg_index in range(leg_count):
+            pace_leg = get_leg_samples_for_track(
+                progress,
+                pace_delta,
+                progress_values,
+                leg_index,
+                first_leg_delta_by_track[track_index],
+            )
+            if pace_leg is None:
+                continue
             if leg_index == 0:
-                pace_delta_value = first_leg_delta_by_track[track_index]
-                if not np.isfinite(pace_delta_value):
-                    continue
                 ax.plot(
                     leg_index + 1,
-                    pace_delta_value,
+                    pace_leg,
                     marker="o",
                     markersize=6,
                     color=line_color,
                     linestyle="None",
                 )
-                continue
-
-            leg_start = progress_values[leg_index]
-            leg_end = progress_values[leg_index + 1]
-            if leg_start > leg_end:
-                leg_start, leg_end = leg_end, leg_start
-
-            leg_mask = (progress >= leg_start) & (progress <= leg_end)
-            pace_leg = pace_delta[leg_mask]
-            if pace_leg.size == 0:
-                continue
-
-            sh.draw_manual_box_plot(ax, leg_index + 1, pace_leg, line_color)
+            else:
+                sh.draw_manual_box_plot(ax, leg_index + 1, pace_leg, line_color)
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(leg_labels, rotation=45, ha="right")
@@ -1121,6 +1193,7 @@ def plot_pace_delta_box_plot_by_boat(
     if latex_include_path is not None:
         latex_include_path.write_text("".join(latex_lines), encoding="utf-8")
 
+
 def plot_speed_range_along_route(
     tracks, speed_window_stats, waypoint_progress=None, waypoint_names=None, export_path=None
 ):
@@ -1129,15 +1202,17 @@ def plot_speed_range_along_route(
         return
 
     route_sample_count = speed_window_stats["routeSampleCount"]
-    window_start_index = speed_window_stats["windowStartIndex"]
-    window_end_index = speed_window_stats["windowEndIndex"]
     min_speed = speed_window_stats["minSpeedByWindow"]
     max_speed = speed_window_stats["maxSpeedByWindow"]
     mean_speed = speed_window_stats.get("meanSpeedByWindow", np.array([]))
     filter_alpha = speed_window_stats.get("filterAlpha", 0)
 
-    window_center = (window_start_index + window_end_index) / 2
-    window_progress = (window_center - 1) / (route_sample_count - 1)
+    window_progress = np.asarray(speed_window_stats.get("windowProgress", []), dtype=float)
+    if window_progress.size == 0:
+        window_start_index = speed_window_stats["windowStartIndex"]
+        window_end_index = speed_window_stats["windowEndIndex"]
+        window_center = (window_start_index + window_end_index) / 2
+        window_progress = (window_center - 1) / (route_sample_count - 1)
 
     fig, ax = plt.subplots()
     sh.maximize_figure(fig)
@@ -1145,34 +1220,9 @@ def plot_speed_range_along_route(
 
     default_color = plt.cm.hsv(np.linspace(0, 1, max(len(tracks), 1)))
     for idx, track in enumerate(tracks):
-        route_index = track["routeIdx"]
-        speed = track["speed"]
-        valid_mask = (
-            np.isfinite(route_index)
-            & np.isfinite(speed)
-            & (speed > 0)
-            & (route_index >= 1)
-            & (route_index <= route_sample_count)
-        )
-        if not valid_mask.any():
+        speed_on_grid = resample_track_speed(track, window_progress, route_sample_count, filter_alpha)
+        if speed_on_grid is None:
             continue
-
-        progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
-        speed_valid = speed[valid_mask]
-        progress_unique, unique_index = np.unique(progress, return_index=True)
-        speed_unique = speed_valid[unique_index]
-        if progress_unique.size < 2:
-            continue
-
-        sort_index = np.argsort(progress_unique)
-        progress_unique = progress_unique[sort_index]
-        speed_unique = speed_unique[sort_index]
-
-        speed_on_grid = np.interp(window_progress, progress_unique, speed_unique)
-        outside_mask = (window_progress < progress_unique[0]) | (window_progress > progress_unique[-1])
-        speed_on_grid[outside_mask] = np.nan
-        speed_on_grid = sh.lowpass_forward_backward(speed_on_grid, filter_alpha)
-
         line_color = track["color"] or default_color[idx]
         ax.plot(window_progress, speed_on_grid, color=line_color, linewidth=0.8, label=track["name"])
 
@@ -1181,83 +1231,7 @@ def plot_speed_range_along_route(
     if mean_speed.size:
         ax.plot(window_progress, mean_speed, "k-", linewidth=1.5, label="Mean speed")
 
-    if waypoint_progress is not None and waypoint_names is not None:
-        progress_values = np.asarray(waypoint_progress, dtype=float)
-        label_values = list(waypoint_names)
-        if label_values and progress_values.size:
-            if len(label_values) < progress_values.size:
-                label_values += [""] * (progress_values.size - len(label_values))
-            if len(label_values) > progress_values.size:
-                label_values = label_values[: progress_values.size]
-
-            valid_mask = np.isfinite(progress_values)
-            progress_values = progress_values[valid_mask]
-            label_values = [lbl for lbl, keep in zip(label_values, valid_mask) if keep]
-            if progress_values.size:
-                progress_values = np.clip(progress_values, 0.0, 1.0)
-                tolerance = 1e-6
-
-                progress_list = progress_values.tolist()
-                label_list = list(label_values)
-
-                def is_start_finish_label(label_text):
-                    label_text = str(label_text).strip().lower()
-                    return label_text.startswith("start") or label_text.startswith("finish")
-
-                filtered_progress = []
-                filtered_labels = []
-                for value, label in zip(progress_list, label_list):
-                    if is_start_finish_label(label):
-                        continue
-                    filtered_progress.append(value)
-                    filtered_labels.append(label)
-
-                progress_list = filtered_progress
-                label_list = filtered_labels
-
-                progress_list.append(0.0)
-                label_list.append("Start")
-                progress_list.append(1.0)
-                label_list.append("Finish")
-
-                progress_values = np.asarray(progress_list, dtype=float)
-                sort_index = np.argsort(progress_values)
-                progress_values = progress_values[sort_index]
-                label_values = [label_list[idx] for idx in sort_index]
-
-                merged_progress = []
-                merged_labels = []
-                for progress_value, label in zip(progress_values, label_values):
-                    if abs(progress_value - 0.0) <= tolerance:
-                        label = "Start"
-                    if abs(progress_value - 1.0) <= tolerance:
-                        label = "Finish"
-                    if not merged_progress:
-                        merged_progress.append(progress_value)
-                        merged_labels.append(label)
-                        continue
-                    if abs(progress_value - merged_progress[-1]) <= tolerance:
-                        if label:
-                            if abs(progress_value - 0.0) <= tolerance:
-                                merged_labels[-1] = "Start"
-                            elif abs(progress_value - 1.0) <= tolerance:
-                                merged_labels[-1] = "Finish"
-                            elif merged_labels[-1]:
-                                merged_labels[-1] = f"{merged_labels[-1]} / {label}"
-                            else:
-                                merged_labels[-1] = label
-                        continue
-                    merged_progress.append(progress_value)
-                    merged_labels.append(label)
-
-                if matplotlib.rcParams.get("text.usetex", False):
-                    merged_labels = [sh.escape_latex_text(lbl) for lbl in merged_labels]
-
-                ax.set_xticks(merged_progress)
-                ax.set_xticklabels(merged_labels, rotation=45, ha="right")
-            else:
-                ax.set_xticks([0.0, 1.0])
-                ax.set_xticklabels(["Start", "Finish"], rotation=45, ha="right")
+    apply_waypoint_ticks(ax, waypoint_progress, waypoint_names)
 
     ax.set_xlabel(r"$s$ (progress)")
     ax.set_ylabel(r"$v\,[\mathrm{kn}]$")
