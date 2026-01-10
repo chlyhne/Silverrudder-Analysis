@@ -10,6 +10,8 @@
 \maketitle
 \section*{Overview}
 This document summarizes pace deltas (minutes per NM) by leg.
+\paragraph{Purpose.}
+The purpose of this report is to give skippers a practical tool for evaluating and analyzing their performance in Silverrudder 2025. By comparing each boat to a common baseline at the same \emph{place} on the course (progress along the rhumb line), the plots highlight where time was gained or lost on each leg and where performance was stable versus inconsistent.
 \paragraph{How to read.}
 Each leg figure shows, for every boat, the distribution of per-sample \emph{pace delta} relative to the fleet mean pace at the same \emph{progress} along the rhumb line (average route). Negative values mean a boat was faster than the baseline (lower minutes per NM), while positive values mean slower. The box spans the interquartile range (25--75\%), the horizontal line is the median, and the dot is the mean; whiskers show the full min/max observed within that leg.
 \paragraph{Definitions (speed, pace, and mean pace).}
@@ -19,6 +21,12 @@ The input data contains a \emph{speed} sample for each GPS record (after unit co
 \mathrm{pace}\,[\mathrm{min}/\mathrm{NM}] = \frac{60}{v\,[\mathrm{kn}]}.
 \]
 For example, $6.0\,\mathrm{kn} \Rightarrow 10.00\,\mathrm{min}/\mathrm{NM}$ and $5.0\,\mathrm{kn} \Rightarrow 12.00\,\mathrm{min}/\mathrm{NM}$.
+\paragraph{Why pace (not speed).}
+Pace is directly ``time per distance'', which makes it easier to reason about where time is gained or lost along the course. Because pace is the inverse of speed,
+\[
+\mathrm{pace}=\frac{60}{v},
+\]
+the relationship is nonlinear: the same speed change costs more minutes per nautical mile when the boat is already slow. Example: $6\,\mathrm{kn}\rightarrow 5\,\mathrm{kn}$ changes pace from $10.00$ to $12.00\,\mathrm{min}/\mathrm{NM}$ (+2.00), while $3\,\mathrm{kn}\rightarrow 2\,\mathrm{kn}$ changes pace from $20.00$ to $30.00\,\mathrm{min}/\mathrm{NM}$ (+10.00). Those extra minutes per mile add up directly into finish-time differences. Expressing performance as pace deltas highlights the locations where time is being lost, even when boats pass those locations at different times.
 \emph{Mean pace} in this report refers to a \emph{baseline} computed at a given location along the course: all boat samples are first projected to the rhumb line (average route) to obtain progress, then within a local progress window the per-sample paces are averaged to form a mean pace curve versus progress (and lightly smoothed along progress). Note that ``mean pace'' is \emph{not} the same as converting the mean speed, because inversion is nonlinear: in general $\overline{(60/v)} \neq 60/\overline{v}$.
 \paragraph{Pace delta.}
 For each boat sample, the plotted value is
@@ -27,40 +35,39 @@ For each boat sample, the plotted value is
 \]
 Negative $\Delta\mathrm{pace}$ means faster-than-baseline at that point on the course (lower minutes per NM), while positive means slower-than-baseline.
 \paragraph{High-level observations.}
-Leg 1 shows the largest early separation, legs 2--4 are comparatively tight (small spreads), and legs 9--10 are the most volatile with very large slow outliers for some boats. Across multiple legs, \emph{Nordri} and \emph{Mercutio} frequently appear among the fastest boats by mean pace delta, while \emph{Gladys} is often among the slowest.
+Use the plot shapes as direct diagnostics:
+\begin{itemize}
+\item \textbf{Sign:} a mean dot or median line \emph{below} $0$ means faster-than-baseline at the same place on the course; \emph{above} $0$ means slower-than-baseline.
+\item \textbf{Consistency:} a short box (small IQR) means the boat stayed close to a single pace delta through the leg; a tall box means the pace delta moved around a lot within the leg.
+\item \textbf{Time leaks:} a long upper whisker (large positive deltas) means the boat had patches where it was dramatically slower than the baseline at specific locations; those patches dominate time lost on that leg.
+\end{itemize}
 \clearpage
-\section*{Leg 1: Start-Thuro Rev}
+\section*{Leg 1: Start/Finish-Thuro}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-01-start-thuro-rev.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-01-start-finish-thuro.pdf}
 \caption{Pace delta by boat for leg 1.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -2.71 to +5.67 min/NM (median +0.06). Median IQR across boats is 5.50 min/NM. Fastest (lowest mean): Nordri (-2.71); Samba (-2.03); My (-1.86). Slowest (highest mean): Gladys (+5.67); Saga (+4.09); Lets Sea (+3.28).
-\paragraph{Interpretation.}
-This is a highly differentiating opening leg with a very wide spread in both mean deltas and within-boat variability, indicating that boats separated early in the race relative to the fleet baseline.
+\paragraph{What stands out.}
+This leg contains a large start-phase effect. The wide spread is driven by late starters and congestion: when a boat is still stuck in the start pack (very low speed), its pace increases sharply and produces large positive $\Delta\mathrm{pace}$ outliers. Boats that clear the start line and traffic quickly produce distributions closer to $0$ (or below), while boats delayed in congestion show long positive tails that mostly represent start delay rather than steady sailing performance.
 \clearpage
-\section*{Leg 2: Thuro Rev-GB Bridge}
+\section*{Leg 2: Thuro-Knudshoved}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-02-thuro-rev-gb-bridge.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-02-thuro-knudshoved.pdf}
 \caption{Pace delta by boat for leg 2.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -1.29 to +1.22 min/NM (median -0.27). Median IQR across boats is 1.52 min/NM. Fastest (lowest mean): Mercutio (-1.29); Moana (-1.22); My (-1.21). Slowest (highest mean): Gladys (+1.22); Sweet Escape (+0.96); Lets Sea (+0.69).
-\paragraph{Interpretation.}
-The clustering is much tighter than leg 1: smaller spreads suggest a more uniform performance baseline and fewer large deviations within this segment.
+\paragraph{What stands out.}
+Compared to leg 1, the distributions are tighter: many boats sit closer to $0$ and the boxes are shorter. Boats that remain clearly offset from $0$ through this leg are carrying a persistent advantage or disadvantage at the same places on the course (not a single isolated incident).
 \clearpage
-\section*{Leg 3: GB Bridge-Fynshoved}
+\section*{Leg 3: Knudshoved-Fynshoved}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-03-gb-bridge-fynshoved.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-03-knudshoved-fynshoved.pdf}
 \caption{Pace delta by boat for leg 3.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -0.54 to +0.34 min/NM (median -0.10). Median IQR across boats is 1.00 min/NM. Fastest (lowest mean): Nordri (-0.54); Chaya (-0.24); Moana (-0.16). Slowest (highest mean): Gladys (+0.34); Lets Sea (+0.25); Vera (+0.16).
-\paragraph{Interpretation.}
-This is one of the tightest legs overall: low ranges and low IQRs indicate that the fleet stayed relatively close to the baseline pace here.
+\paragraph{What stands out.}
+This is a compression leg: many boats sit close to $0$ and the main differentiator is consistency. A narrow box means the boat stayed close to its typical pace delta through the leg; a long positive whisker means the boat had brief but very costly slowdowns at specific places.
 \clearpage
 \section*{Leg 4: Fynshoved-Aebelo}
 \begin{figure}[H]
@@ -68,74 +75,54 @@ This is one of the tightest legs overall: low ranges and low IQRs indicate that 
 \includegraphics[width=\linewidth]{figures/pace-delta-leg-04-fynshoved-aebelo.pdf}
 \caption{Pace delta by boat for leg 4.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -0.35 to +0.68 min/NM (median -0.08). Median IQR across boats is 1.03 min/NM. Fastest (lowest mean): Julia (-0.35); Saga (-0.30); Samba (-0.26). Slowest (highest mean): Sweet Escape (+0.68); Lets Sea (+0.58); Gladys (+0.42).
-\paragraph{Interpretation.}
-Still a relatively tight leg, but with clearer separation at the slow end; the slowest boats show consistently positive deltas (slower-than-baseline pace) throughout this segment.
+\paragraph{What stands out.}
+The slow side shows the important structure: when a boat's box lies mostly above $0$, the boat is slower than the baseline through most of the leg. When the upper whisker extends far above the box, the boat has a small number of locations where it loses a large amount of time per mile relative to the baseline.
 \clearpage
-\section*{Leg 5: Aebelo-Striib Fyr}
+\section*{Leg 5: Aebelo-Strib}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-05-aebelo-striib-fyr.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-05-aebelo-strib.pdf}
 \caption{Pace delta by boat for leg 5.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -0.62 to +1.65 min/NM (median +0.14). Median IQR across boats is 1.81 min/NM. Fastest (lowest mean): Nordri (-0.62); Vera (-0.44); Samba (-0.32). Slowest (highest mean): Gladys (+1.65); Chaya (+1.22); Lets Sea (+0.69).
-\paragraph{Interpretation.}
-The spread increases again: several boats are consistently faster than the baseline (negative deltas), while the slowest boats show larger positive deltas and wider variability.
+\paragraph{What stands out.}
+This leg shows clearer separation: boats spread further away from $0$ and the slow side shows larger spreads for some boats. When a boat has a high median \emph{and} a tall box, the boat is slower than baseline most of the time and also inconsistent within the leg; that combination produces large cumulative time loss.
 \clearpage
-\section*{Leg 6: Striib Fyr-Snaevringen}
+\section*{Leg 6: Strib-Hindsgavl}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-06-striib-fyr-snaevringen.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-06-strib-hindsgavl.pdf}
 \caption{Pace delta by boat for leg 6.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -1.66 to +1.39 min/NM (median -0.60). Median IQR across boats is 2.03 min/NM. Fastest (lowest mean): Nordri (-1.66); Aegir 2.0 (-1.26); Saga (-1.22). Slowest (highest mean): Gladys (+1.39); Lets Sea (+0.92); Sweet Escape (+0.61).
-\paragraph{Interpretation.}
-This leg is more differentiating than legs 2--4, with clear separation between the fastest group (more negative deltas) and the slowest group (positive deltas).
+\paragraph{What stands out.}
+This leg separates boats into a faster group (negative deltas) and a slower group (positive deltas). Within each group, compare spreads: two boats have similar medians, but the boat with the narrower box is the boat with fewer large deviations from its typical pace delta through the leg.
 \clearpage
-\section*{Leg 7: Snaevringen-Bogo}
+\section*{Leg 7: Hindsgavl-Helnaes}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-07-snaevringen-bogo.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-07-hindsgavl-helnaes.pdf}
 \caption{Pace delta by boat for leg 7.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -1.63 to +2.28 min/NM (median -0.27). Median IQR across boats is 2.15 min/NM. Fastest (lowest mean): Mercutio (-1.63); Saga (-0.94); My (-0.74). Slowest (highest mean): Gladys (+2.28); Chaya (+1.06); Sweet Escape (+0.85).
-\paragraph{Interpretation.}
-The fastest boats are clearly separated by mean pace delta, while wider boxes for some boats indicate higher within-leg variability (inconsistent deviation from the baseline).
+\paragraph{What stands out.}
+This leg makes it easy to spot both speed and reliability. Boats with boxes centered below $0$ are faster-than-baseline; boats with boxes centered above $0$ are slower-than-baseline. A tight box with one long positive whisker points to a specific slow patch: most of the leg was fine, but one location produced a large time loss.
 \clearpage
-\section*{Leg 8: Bogo-Helnaes}
+\section*{Leg 8: Helnaes-Svelmo}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-08-bogo-helnaes.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-08-helnaes-svelmo.pdf}
 \caption{Pace delta by boat for leg 8.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -1.75 to +1.86 min/NM (median -0.35). Median IQR across boats is 2.17 min/NM. Fastest (lowest mean): Mercutio (-1.75); My (-1.49); Moana (-0.80). Slowest (highest mean): Gladys (+1.86); Sweet Escape (+0.86); Chaya (+0.46).
-\paragraph{Interpretation.}
-Similar to leg 7, this segment shows a sustained advantage for the fastest boats, with meaningful separation between the top and bottom of the fleet.
+\paragraph{What stands out.}
+This leg shows the same two ingredients: offset from $0$ (faster or slower) and spread (stable or variable). Boats that combine a negative center and a narrow box are fast \emph{and} steady; boats that combine a positive center and a tall box are slow \emph{and} inconsistent.
 \clearpage
-\section*{Leg 9: Helnaes-Lehnskov}
+\section*{Leg 9: Svelmo-Start/Finish}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-09-helnaes-lehnskov.pdf}
+\includegraphics[width=\linewidth]{figures/pace-delta-leg-09-svelmo-start-finish.pdf}
 \caption{Pace delta by boat for leg 9.}
 \end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -4.03 to +15.87 min/NM (median -2.03). Median IQR across boats is 4.33 min/NM. Fastest (lowest mean): My (-4.03); Mercutio (-3.75); Aegir 2.0 (-3.50). Slowest (highest mean): Sweet Escape (+15.87); Gladys (+10.55); Lets Sea (+4.24).
-\paragraph{Interpretation.}
-This leg is extremely volatile and dominates the slow-end outliers: very large positive means suggest some boats spent substantial time far slower than the fleet baseline within this segment.
+\paragraph{What stands out.}
+This final leg contains the largest slow outliers in the set of plots: some boats have long positive tails. Those tails correspond to locations where the boat spent substantial time at low speed, which drives pace upward (minutes per mile). Boats with a strong slow tail in this leg have a small set of places that dominate their total time loss on the run back to Start/Finish.
 \clearpage
-\section*{Leg 10: Lehnskov-Finish}
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-10-lehnskov-finish.pdf}
-\caption{Pace delta by boat for leg 10.}
-\end{figure}
-\paragraph{Summary.}
-Mean pace deltas range from -5.10 to +14.73 min/NM (median -1.85). Median IQR across boats is 6.02 min/NM. Fastest (lowest mean): Moana (-5.10); Vera (-4.46); Mercutio (-3.05). Slowest (highest mean): Aegir 2.0 (+14.73); Julia (+5.36); Saga (+3.86).
-\paragraph{Interpretation.}
-The final leg is also highly differentiating, with large positive outliers on the slow end and a clearly faster front group by mean pace delta.
+\section*{Pace delta by boat (all legs)}
+\input{boat-pace-delta-figures.tex}
 \end{document}

@@ -1117,6 +1117,26 @@ def sanitize_filename_label(label):
     return text or "leg"
 
 
+def escape_latex_text(text):
+    """Escape characters that are special in LaTeX text."""
+    if text is None:
+        return ""
+    escaped = str(text)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+    }
+    for key, value in replacements.items():
+        escaped = escaped.replace(key, value)
+    return escaped
+
+
 def quantiles_no_toolbox(values, quantile_points):
     """Linear-interpolated quantiles without toolboxes."""
     sorted_values = np.sort(np.asarray(values, dtype=float))
