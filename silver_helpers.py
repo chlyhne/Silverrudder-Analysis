@@ -1237,66 +1237,242 @@ def parse_utc_time(value):
         return np.nan
 
 
-def compute_average_route(tracks, route_sample_count):
-    """Simple mean route by arclength-resampling each track."""
-    track_lat_medians = []
-    track_lon_medians = []
+def load_geo_data(geo_data_path):
+    """Load rhumb line coordinates and waypoint gates from GeoJSON."""
+    geo_data_path = Path(geo_data_path)
+    if not geo_data_path.exists():
+        raise FileNotFoundError(f"Geo data file not found: {geo_data_path}")
+
+    geo_data = json.loads(geo_data_path.read_text(encoding="utf-8"))
+    features = geo_data.get("features", []) if isinstance(geo_data, dict) else []
+
+    route_coords = None
+    waypoint_gates = []
+    for feature in features:
+        properties = feature.get("properties") or {}
+        geometry = feature.get("geometry") or {}
+        geometry_type = geometry.get("type")
+        coordinates = geometry.get("coordinates")
+        name = str(properties.get("name", "")).strip()
+        feature_type = str(properties.get("type", "")).strip().lower()
+
+        if feature_type == "waypoint":
+            gate_coords = _normalize_gate_coords(coordinates)
+            gate_index = _parse_gate_index(properties)
+            waypoint_gates.append(
+                {"name": name or f"Waypoint {gate_index}", "index": gate_index, "coords": gate_coords}
+            )
+            continue
+
+        if geometry_type == "LineString":
+            if route_coords is None or name.lower().startswith("rhumb"):
+                route_coords = [list(point) for point in coordinates]
+
+    if route_coords is None or len(route_coords) < 2:
+        raise ValueError("Rhumb line coordinates not found in geo data.")
+
+    waypoint_gates.sort(key=lambda gate: gate["index"])
+    return route_coords, waypoint_gates
+
+
+def compute_average_route(route_sample_count, geo_data_path):
+    """Resample the supplied rhumb-line GeoJSON into a high-resolution route."""
+    route_coords, _ = load_geo_data(geo_data_path)
+    longitude = np.array([point[0] for point in route_coords], dtype=float)
+    latitude = np.array([point[1] for point in route_coords], dtype=float)
+    valid_mask = np.isfinite(latitude) & np.isfinite(longitude)
+    latitude = latitude[valid_mask]
+    longitude = longitude[valid_mask]
+    if latitude.size < 2:
+        raise ValueError("Rhumb line has insufficient valid coordinates.")
+
+    distance_along = cumulative_distance_meters(latitude, longitude)
+    keep_mask = np.concatenate([[True], np.diff(distance_along) > 0])
+    latitude = latitude[keep_mask]
+    longitude = longitude[keep_mask]
+    distance_along = distance_along[keep_mask]
+    if distance_along.size < 2 or distance_along[-1] <= 0:
+        raise ValueError("Rhumb line distance is not sufficient for resampling.")
+
+    total_distance = distance_along[-1]
+    sample_distance = np.linspace(0, total_distance, route_sample_count)
+    resampled_lat = np.interp(sample_distance, distance_along, latitude)
+    resampled_lon = np.interp(sample_distance, distance_along, longitude)
+    route_fraction = sample_distance / total_distance
+
+    return {"lat": resampled_lat, "lon": resampled_lon, "s": route_fraction}
+
+
+def _normalize_gate_coords(coordinates):
+    """Normalize gate coordinates into a list of two [lon, lat] points."""
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        raise ValueError("Waypoint gate must have two coordinate points.")
+    gate_coords = [list(point) for point in coordinates]
+    if len(gate_coords) < 2:
+        raise ValueError("Waypoint gate must have two coordinate points.")
+    return gate_coords[:2]
+
+
+def _parse_gate_index(properties):
+    """Extract integer index from waypoint properties."""
+    if "index" in properties:
+        try:
+            return int(properties["index"])
+        except (TypeError, ValueError):
+            pass
+    for key in properties.keys():
+        match = re.match(r"^index\\s*(\\d+)$", str(key).strip())
+        if match:
+            return int(match.group(1))
+    raise ValueError(f"Waypoint is missing a valid index: {properties}")
+
+
+def _segment_intersection_fraction(p_start, p_end, q_start, q_end):
+    """Return fractional position along p segment where it intersects q segment."""
+    px, py = p_start
+    rx, ry = (p_end[0] - px, p_end[1] - py)
+    qx, qy = q_start
+    sx, sy = (q_end[0] - qx, q_end[1] - qy)
+
+    denom = rx * sy - ry * sx
+    if abs(denom) < 1e-12:
+        return None
+
+    qmpx = qx - px
+    qmpy = qy - py
+    t = (qmpx * sy - qmpy * sx) / denom
+    u = (qmpx * ry - qmpy * rx) / denom
+    if 0 <= t <= 1 and 0 <= u <= 1:
+        return t
+    return None
+
+
+def compute_gate_crossings(tracks, waypoint_gates):
+    """Compute first crossing time for each gate per track, in gate order."""
+    gate_times_by_track = []
     for track in tracks:
-        latitude = track["lat"]
-        longitude = track["lon"]
-        valid_mask = np.isfinite(latitude) & np.isfinite(longitude)
-        if not valid_mask.any():
-            continue
-        track_lat_medians.append(np.median(latitude[valid_mask]))
-        track_lon_medians.append(np.median(longitude[valid_mask]))
-
-    if not track_lat_medians or not track_lon_medians:
-        raise ValueError("No valid track coordinates to compute average route.")
-
-    reference_lat = float(np.median(track_lat_medians))
-    reference_lon = float(np.median(track_lon_medians))
-
-    route_fraction_grid = np.linspace(0, 1, route_sample_count)
-    resampled_x = np.full((route_sample_count, len(tracks)), np.nan)
-    resampled_y = np.full((route_sample_count, len(tracks)), np.nan)
-
-    for idx, track in enumerate(tracks):
-        latitude = track["lat"]
-        longitude = track["lon"]
-        valid_mask = np.isfinite(latitude) & np.isfinite(longitude)
-        latitude = latitude[valid_mask]
+        longitude = np.asarray(track["lon"], dtype=float)
+        latitude = np.asarray(track["lat"], dtype=float)
+        time_values = np.asarray(track["t"], dtype=float)
+        valid_mask = np.isfinite(longitude) & np.isfinite(latitude) & np.isfinite(time_values)
         longitude = longitude[valid_mask]
-        if latitude.size < 2:
+        latitude = latitude[valid_mask]
+        time_values = time_values[valid_mask]
+
+        gate_times = np.full(len(waypoint_gates), np.nan, dtype=float)
+        if longitude.size < 2:
+            gate_times_by_track.append(gate_times)
             continue
 
-        distance_along = cumulative_distance_meters(latitude, longitude)
-        keep_mask = np.concatenate([[True], np.diff(distance_along) > 0])
-        latitude = latitude[keep_mask]
-        longitude = longitude[keep_mask]
-        distance_along = distance_along[keep_mask]
-        if distance_along.size < 2 or distance_along[-1] <= 0:
+        start_index = 0
+        for gate_idx, gate in enumerate(waypoint_gates):
+            gate_coords = gate["coords"]
+            gate_start = gate_coords[0]
+            gate_end = gate_coords[1]
+
+            crossing_time = np.nan
+            for sample_index in range(start_index, longitude.size - 1):
+                p_start = (longitude[sample_index], latitude[sample_index])
+                p_end = (longitude[sample_index + 1], latitude[sample_index + 1])
+                fraction = _segment_intersection_fraction(p_start, p_end, gate_start, gate_end)
+                if fraction is None:
+                    continue
+                crossing_time = time_values[sample_index] + fraction * (
+                    time_values[sample_index + 1] - time_values[sample_index]
+                )
+                start_index = sample_index + 1
+                break
+
+            gate_times[gate_idx] = crossing_time
+
+        gate_times_by_track.append(gate_times)
+        track["gateTimes"] = gate_times
+
+    return gate_times_by_track
+
+
+def trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos):
+    """Trim tracks to the interval between start/finish gate crossings."""
+    trimmed_tracks = []
+    for track, gate_times in zip(tracks, gate_times_by_track):
+        if gate_times.size == 0:
             continue
+        start_time = gate_times[start_gate_pos]
+        finish_time = gate_times[finish_gate_pos]
+        if not (np.isfinite(start_time) and np.isfinite(finish_time)):
+            raise ValueError(f"Missing start/finish crossing for boat {track.get('name', 'Unknown')}.")
+        if finish_time < start_time:
+            raise ValueError(f"Finish precedes start for boat {track.get('name', 'Unknown')}.")
 
-        normalized = distance_along / distance_along[-1]
-        x_m, y_m = ll2xy_meters(latitude, longitude, reference_lat, reference_lon)
-        resampled_x[:, idx] = np.interp(route_fraction_grid, normalized, x_m, left=np.nan, right=np.nan)
-        resampled_y[:, idx] = np.interp(route_fraction_grid, normalized, y_m, left=np.nan, right=np.nan)
+        time_values = track["t"]
+        latitude = track["lat"]
+        longitude = track["lon"]
+        speed_values = track["speed"]
+        keep_mask = (time_values >= start_time) & (time_values <= finish_time)
+        track["t"] = time_values[keep_mask]
+        track["lat"] = latitude[keep_mask]
+        track["lon"] = longitude[keep_mask]
+        track["speed"] = speed_values[keep_mask]
+        track["routeIdx"] = np.array([], dtype=int)
+        track["routeDist"] = np.array([], dtype=float)
+        track["alpha"] = np.array([], dtype=float)
+        trimmed_tracks.append(track)
+    return trimmed_tracks
 
-    valid_x = np.isfinite(resampled_x)
-    valid_y = np.isfinite(resampled_y)
-    sum_x = np.nansum(resampled_x, axis=1)
-    sum_y = np.nansum(resampled_y, axis=1)
-    count_x = np.sum(valid_x, axis=1)
-    count_y = np.sum(valid_y, axis=1)
-    mean_x = np.full_like(sum_x, np.nan, dtype=float)
-    mean_y = np.full_like(sum_y, np.nan, dtype=float)
-    np.divide(sum_x, count_x, out=mean_x, where=count_x > 0)
-    np.divide(sum_y, count_y, out=mean_y, where=count_y > 0)
-    mean_x = fill_missing_linear(mean_x)
-    mean_y = fill_missing_linear(mean_y)
 
-    mean_lat, mean_lon = xy2ll_meters(mean_x, mean_y, reference_lat, reference_lon)
-    return {"lat": mean_lat, "lon": mean_lon, "s": route_fraction_grid}
+def compute_waypoint_progress_from_gates(average_route, waypoint_gates):
+    """Project waypoint gate lines onto the rhumb line to get progress values."""
+    route_lat = np.asarray(average_route["lat"], dtype=float)
+    route_lon = np.asarray(average_route["lon"], dtype=float)
+    if route_lat.size < 2:
+        raise ValueError("Rhumb line has insufficient samples for waypoint projection.")
+
+    cumulative_distance = cumulative_distance_meters(route_lat, route_lon)
+    total_distance = cumulative_distance[-1]
+    if not np.isfinite(total_distance) or total_distance <= 0:
+        raise ValueError("Rhumb line distance is invalid for waypoint projection.")
+
+    progress_values = []
+    waypoint_names = []
+    for gate in waypoint_gates:
+        gate_coords = gate["coords"]
+        gate_start = gate_coords[0]
+        gate_end = gate_coords[1]
+        intersection_progress = None
+
+        for idx in range(route_lat.size - 1):
+            p_start = (route_lon[idx], route_lat[idx])
+            p_end = (route_lon[idx + 1], route_lat[idx + 1])
+            fraction = _segment_intersection_fraction(p_start, p_end, gate_start, gate_end)
+            if fraction is None:
+                continue
+            segment_length = cumulative_distance[idx + 1] - cumulative_distance[idx]
+            distance_at_intersection = cumulative_distance[idx] + fraction * segment_length
+            intersection_progress = distance_at_intersection / total_distance
+            break
+
+        if intersection_progress is None:
+            raise ValueError(f"Waypoint gate '{gate.get('name', '')}' does not intersect the rhumb line.")
+
+        progress_values.append(float(intersection_progress))
+        waypoint_names.append(gate.get("name", ""))
+
+    return progress_values, waypoint_names
+
+
+def find_start_finish_gate_positions(waypoint_gates):
+    """Return indices for start and finish gates in the gate list."""
+    start_pos = None
+    finish_pos = None
+    for idx, gate in enumerate(waypoint_gates):
+        name = str(gate.get("name", "")).strip().lower()
+        if name == "start":
+            start_pos = idx
+        elif name == "finish":
+            finish_pos = idx
+    if start_pos is None or finish_pos is None:
+        raise ValueError("Start or finish gate not found in geo data.")
+    return start_pos, finish_pos
 
 
 def cumulative_distance_meters(latitude, longitude):

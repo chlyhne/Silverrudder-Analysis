@@ -29,17 +29,11 @@ from silver_helpers import (
     load_race_metadata,
     parse_local_time_to_utc,
     build_boat_color_map,
-    load_waypoint_csvs,
-    enforce_monotonic_waypoint_times,
-    get_waypoint_index_bounds,
-    extract_waypoint_time_map,
-    compute_reference_start_time,
-    compute_waypoint_positions,
-    interpolate_track_position,
-    unwrap_waypoint_indices,
-    map_waypoints_to_progress,
-    compute_start_finish_point,
-    trim_tracks_by_start_time_and_finish_proximity,
+    load_geo_data,
+    compute_gate_crossings,
+    trim_tracks_by_gate_times,
+    compute_waypoint_progress_from_gates,
+    find_start_finish_gate_positions,
     map_track_points_to_route,
     remove_route_index_spikes,
     compute_sample_alpha_by_route_windows,
@@ -79,8 +73,6 @@ def main():
     metadata_path = Path("data") / "silverrudder_2025" / "race_metadata.json"
     race_meta = load_race_metadata(metadata_path)
 
-    # Waypoints are inferred from split CSVs under data/<race>/waypoints.
-
     trackIdKeys = race_meta["track_id_keys"]
     boatNames = race_meta["boat_names"]
 
@@ -102,29 +94,11 @@ def main():
     trackNameMap = dict(zip(trackIdKeys, boatNames))
     tracks = apply_track_names(tracks, trackNameMap)
 
-    localOffsetHours = race_meta.get("local_offset_hours", 0)
-    startFinishRadiusMeters = float(race_meta.get("start_finish_radius_m", 200.0))
-    waypoint_dir = metadata_path.parent / "waypoints"
-    waypoint_data = load_waypoint_csvs(waypoint_dir, localOffsetHours)
-    if not waypoint_data:
-        raise FileNotFoundError(f"No waypoint CSVs found in {waypoint_dir}")
-
-    enforce_monotonic_waypoint_times(waypoint_data)
-
-    start_index, finish_index = get_waypoint_index_bounds(waypoint_data)
-    start_times_utc = extract_waypoint_time_map(waypoint_data, start_index)
-    finish_times_utc = extract_waypoint_time_map(waypoint_data, finish_index)
-    if not finish_times_utc:
-        raise ValueError("No finish waypoint times found to infer the start/finish point.")
-
-    startTimeUtc = compute_reference_start_time(start_times_utc)
-    startFinishPoint = compute_start_finish_point(tracks, finish_times_utc)
-    tracks = trim_tracks_by_start_time_and_finish_proximity(
-        tracks,
-        startTimeUtc,
-        startFinishPoint,
-        startFinishRadiusMeters,
-    )
+    geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
+    _, waypoint_gates = load_geo_data(geo_data_path)
+    start_gate_pos, finish_gate_pos = find_start_finish_gate_positions(waypoint_gates)
+    gate_times_by_track = compute_gate_crossings(tracks, waypoint_gates)
+    tracks = trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
 
     boatColors = race_meta.get("boat_colors", {})
     trackColorMap = build_boat_color_map(boatNames, boatColors)
@@ -132,15 +106,16 @@ def main():
 
     # --- Average route and mapping ---
     routeSampleCount = 20000
-    averageRoute = compute_average_route(tracks, routeSampleCount)
+    averageRoute = compute_average_route(routeSampleCount, geo_data_path)
 
     routeSearchWindowHalfWidth = 200
 
     tracks = map_track_points_to_route(tracks, averageRoute, routeSearchWindowHalfWidth)
     tracks = remove_route_index_spikes(tracks, routeSampleCount)
 
-    waypoint_positions = compute_waypoint_positions(waypoint_data, tracks)
-    wayPointProgress, wayPointNames = map_waypoints_to_progress(waypoint_positions, averageRoute)
+    wayPointProgress, wayPointNames = compute_waypoint_progress_from_gates(
+        averageRoute, waypoint_gates
+    )
 
     # --- Route-sample window normalization (per-sample alpha) ---
     windowSampleCount = 50
