@@ -1,4 +1,6 @@
-import json
+﻿import json
+from dataclasses import dataclass, replace
+from typing import List, Optional
 from pathlib import Path
 
 import numpy as np
@@ -6,7 +8,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.ticker import MultipleLocator
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Computer Modern Roman"]
@@ -14,123 +15,31 @@ matplotlib.rcParams["text.latex.preamble"] = r"\usepackage[T1]{fontenc}\usepacka
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 
+import box_plot_utils as box_plots
 import silver_helpers as sh
 
+# Centralize box-plot styling so every figure uses shared defaults with per-metric overrides.
+BOX_PLOT_STYLE_COMMON = box_plots.BoxPlotStyle()
+BOX_PLOT_AXIS_STYLE_COMMON = box_plots.BoxPlotAxisStyle()
+BOX_PLOT_STYLE_SPEED = BOX_PLOT_STYLE_COMMON
+BOX_PLOT_AXIS_STYLE_SPEED = BOX_PLOT_AXIS_STYLE_COMMON
+BOX_PLOT_STYLE_PACE = BOX_PLOT_STYLE_COMMON
+BOX_PLOT_AXIS_STYLE_PACE = replace(BOX_PLOT_AXIS_STYLE_COMMON, major_tick=2.0)
+BOX_PLOT_WHISKER_SCALE = 1.5
+
 def main():
+    # End-to-end pipeline: load metadata and tracks, align samples to a reference route,
+    # compute per-window baseline stats, then prepare plot-ready data for the chosen outputs.
     data_root = Path("data") / "silverrudder_2025"
     filename = str(data_root / "Silverrudder 2025_Keelboats Small_gps_data.csv")
     metadata_path = data_root / "race_metadata.json"
 
+    # Metadata provides stable IDs, display names, and optional colors used across plots.
     race_meta = sh.load_race_metadata(metadata_path)
     track_id_keys = race_meta["track_id_keys"]
     boat_names = race_meta["boat_names"]
 
-    tracks = load_tracks_from_csv(filename, track_id_keys, boat_names)
-    start_time_utc = parse_start_time_utc(race_meta)
-
-    geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
-    waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos = load_waypoint_gates(
-        geo_data_path
-    )
-    gate_times_by_track = sh.compute_gate_crossings(tracks, waypoint_gates)
-    tracks = sh.trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
-    tracks = apply_track_colors_from_metadata(tracks, boat_names, race_meta)
-
-    route_sample_count = 20000
-    route_search_window_half_width = 200
-    tracks, average_route = prepare_route_mapping(
-        tracks, geo_data_path, route_sample_count, route_search_window_half_width
-    )
-
-    way_point_progress, way_point_names = sh.compute_waypoint_progress_from_gates(
-        average_route, waypoint_gates
-    )
-
-    window_sample_count = 50
-    window_step_samples = 1
-    filter_alpha = 0.01
-    tracks, speed_window_stats = compute_speed_window_stats(
-        tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
-    )
-
-    export_pdf = True
-    export_pdf_dir = Path("documentation") / "figures"
-
-    show_map_plot = True
-    show_pace_box_plots = False
-    show_pace_box_plots_by_boat = False
-    show_speed_box_plots = True
-    show_speed_box_plots_by_boat = True
-    show_pace_range_plot = True
-
-    if show_map_plot:
-        plot_colored_tracks(tracks, average_route, speed_window_stats, way_point_progress, way_point_names)
-
-    if show_pace_box_plots:
-        plot_pace_delta_box_plot(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            average_route,
-            start_time_utc,
-            first_leg_gate_pos,
-            export_dir=export_pdf_dir if export_pdf else None,
-        )
-
-    if show_pace_box_plots_by_boat:
-        plot_pace_delta_box_plot_by_boat(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            average_route,
-            start_time_utc,
-            first_leg_gate_pos,
-            export_dir=export_pdf_dir if export_pdf else None,
-            latex_include_path=(
-                Path("documentation") / "boat-pace-delta-figures.tex" if export_pdf else None
-            ),
-        )
-
-    if show_speed_box_plots:
-        plot_speed_delta_box_plot(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            average_route,
-            start_time_utc,
-            first_leg_gate_pos,
-            export_dir=export_pdf_dir if export_pdf else None,
-        )
-
-    if show_speed_box_plots_by_boat:
-        plot_speed_delta_box_plot_by_boat(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            average_route,
-            start_time_utc,
-            first_leg_gate_pos,
-            export_dir=export_pdf_dir if export_pdf else None,
-        )
-
-    if show_pace_range_plot:
-        plot_speed_range_along_route(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            export_path=(export_pdf_dir / "pace-range-along-route.pdf") if export_pdf else None,
-        )
-
-    plt.show()
-
-
-def load_tracks_from_csv(filename, track_id_keys, boat_names):
-    """Load, group, and name tracks from the tracking CSV."""
+    # Build per-boat tracks from raw samples; names are attached early for consistent labeling.
     tracking_data = sh.read_tracking_csv_as_struct(filename)
     tracks = sh.build_tracks(
         tracking_data,
@@ -142,11 +51,141 @@ def load_tracks_from_csv(filename, track_id_keys, boat_names):
     )
     tracks = sh.convert_speed_to_knots(tracks)
     track_name_map = dict(zip(track_id_keys, boat_names))
-    return sh.apply_track_names(tracks, track_name_map)
+    tracks = sh.apply_track_names(tracks, track_name_map)
+    # Start time anchors the first-leg pace/speed metrics to an absolute clock.
+    start_time_utc = parse_start_time_utc(race_meta)
+
+    # Gate crossings let us trim each track to the common race segment (start -> finish).
+    geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
+    waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos = load_waypoint_gates(geo_data_path)
+    gate_times_by_track = sh.compute_gate_crossings(tracks, waypoint_gates)
+    tracks = sh.trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
+    # Colors are mapped by boat name to keep figures visually consistent across plots.
+    boat_colors = race_meta.get("boat_colors", {})
+    track_color_map = sh.build_boat_color_map(boat_names, boat_colors)
+    tracks = sh.apply_track_colors(tracks, track_color_map)
+
+    route_sample_count = 20000
+    # Search window limits route-index jumps when mapping samples onto the reference route.
+    route_search_window_half_width = int(np.ceil(route_sample_count / 100))
+    # The average route provides a 1D progress axis for comparing boats at the same location.
+    average_route = sh.compute_average_route(route_sample_count, geo_data_path)
+    tracks = sh.map_track_points_to_route(tracks, average_route, route_search_window_half_width)
+    tracks = sh.remove_route_index_spikes(tracks, route_sample_count)
+    # Waypoint progress is used to define leg boundaries and label x-axes.
+    way_point_progress, way_point_names = sh.compute_waypoint_progress_from_gates(average_route, waypoint_gates)
+
+    window_sample_count = 50
+    window_step_samples = 1
+    filter_alpha = 0.01
+    # Per-window stats establish the fleet baseline used for alpha coloring and delta plots.
+    tracks, speed_window_stats = sh.compute_sample_alpha_by_route_windows(
+        tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
+    )
+
+    # When enabled, figures are saved to PDF and immediately closed to limit memory use.
+    export_and_close_figures = True
+    export_pdf_dir = Path("documentation") / "figures"
+    export_dir = export_pdf_dir if export_and_close_figures else None
+    # Disable interactive display when exporting so figures do not pop up during batch runs.
+    if export_and_close_figures:
+        plt.ioff()
+
+    # Plot toggles let us selectively generate the heavier figures when needed.
+    show_map_plot = False
+    show_pace_box_plots = True
+    show_pace_box_plots_by_boat = True
+    show_speed_box_plots = True
+    show_speed_box_plots_by_boat = True
+    show_pace_range_plot = False
+
+    if show_map_plot:
+        plot_colored_tracks(
+            tracks,
+            average_route,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            export_path=(export_dir / "map.pdf") if export_and_close_figures else None,
+            export_and_close=export_and_close_figures,
+        )
+
+    # Precompute pace deltas once when either pace plot is enabled.
+    pace_box_plot_data = None
+    if show_pace_box_plots or show_pace_box_plots_by_boat:
+        pace_box_plot_data = prepare_pace_delta_box_plot_data(
+            tracks,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
+            first_leg_gate_pos,
+        )
+
+    # Precompute speed deltas once when either speed plot is enabled.
+    speed_box_plot_data = None
+    if show_speed_box_plots or show_speed_box_plots_by_boat:
+        speed_box_plot_data = prepare_speed_delta_box_plot_data(
+            tracks,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            average_route,
+            start_time_utc,
+            first_leg_gate_pos,
+        )
+
+    if show_pace_box_plots:
+        plot_pace_delta_box_plot(
+            tracks,
+            pace_box_plot_data,
+            export_dir=export_dir,
+            export_and_close=export_and_close_figures,
+        )
+
+    if show_pace_box_plots_by_boat:
+        plot_pace_delta_box_plot_by_boat(
+            tracks,
+            pace_box_plot_data,
+            export_dir=export_dir,
+            export_and_close=export_and_close_figures,
+        )
+
+    if show_speed_box_plots:
+        plot_speed_delta_box_plot(
+            tracks,
+            speed_box_plot_data,
+            export_dir=export_dir,
+            export_and_close=export_and_close_figures,
+        )
+
+    if show_speed_box_plots_by_boat:
+        plot_speed_delta_box_plot_by_boat(
+            tracks,
+            speed_box_plot_data,
+            export_dir=export_dir,
+            export_and_close=export_and_close_figures,
+        )
+
+    if show_pace_range_plot:
+        plot_speed_range_along_route(
+            tracks,
+            speed_window_stats,
+            way_point_progress,
+            way_point_names,
+            export_path=(export_dir / "pace-range-along-route.pdf") if export_and_close_figures else None,
+            export_and_close=export_and_close_figures,
+        )
+
+    # Only display figures interactively when we are not in export-and-close mode.
+    if not export_and_close_figures:
+        plt.show()
 
 
 def parse_start_time_utc(race_meta):
     """Parse the race start time from metadata into UTC seconds."""
+    # Metadata stores local time plus offset; convert once so downstream metrics stay consistent.
     local_offset_hours = race_meta.get("local_offset_hours", 0)
     start_time_local = race_meta.get("start_time_local", "")
     start_time_utc = sh.parse_local_time_to_utc(start_time_local, local_offset_hours)
@@ -159,34 +198,11 @@ def load_waypoint_gates(geo_data_path):
     """Load waypoint gates and locate start/finish indices."""
     _, waypoint_gates = sh.load_geo_data(geo_data_path)
     start_gate_pos, finish_gate_pos = sh.find_start_finish_gate_positions(waypoint_gates)
+    # The first leg is defined as Start -> next gate, used for scalar delta metrics.
     first_leg_gate_pos = start_gate_pos + 1
     if first_leg_gate_pos >= len(waypoint_gates):
         raise ValueError("No waypoint available after Start for first leg.")
     return waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos
-
-
-def apply_track_colors_from_metadata(tracks, boat_names, race_meta):
-    """Attach per-boat colors from metadata to the tracks."""
-    boat_colors = race_meta.get("boat_colors", {})
-    track_color_map = sh.build_boat_color_map(boat_names, boat_colors)
-    return sh.apply_track_colors(tracks, track_color_map)
-
-
-def prepare_route_mapping(tracks, geo_data_path, route_sample_count, search_window_half_width):
-    """Compute the rhumb line and map track points to route indices."""
-    average_route = sh.compute_average_route(route_sample_count, geo_data_path)
-    tracks = sh.map_track_points_to_route(tracks, average_route, search_window_half_width)
-    tracks = sh.remove_route_index_spikes(tracks, route_sample_count)
-    return tracks, average_route
-
-
-def compute_speed_window_stats(
-    tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
-):
-    """Compute per-window min/max/mean and per-sample alpha."""
-    return sh.compute_sample_alpha_by_route_windows(
-        tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
-    )
 
 
 def normalize_waypoint_series(waypoint_progress, waypoint_names):
@@ -194,12 +210,14 @@ def normalize_waypoint_series(waypoint_progress, waypoint_names):
     progress_values = np.asarray(waypoint_progress, dtype=float).flatten()
     label_values = list(waypoint_names) if waypoint_names is not None else []
 
+    # Keep labels aligned with progress values even when metadata is short/long.
     if label_values and progress_values.size:
         if len(label_values) < progress_values.size:
             label_values += [""] * (progress_values.size - len(label_values))
         if len(label_values) > progress_values.size:
             label_values = label_values[: progress_values.size]
 
+    # Drop NaN progress entries and the matching labels to avoid misaligned ticks.
     finite_mask = np.isfinite(progress_values)
     progress_values = progress_values[finite_mask]
     label_values = [label for label, keep in zip(label_values, finite_mask) if keep]
@@ -208,6 +226,7 @@ def normalize_waypoint_series(waypoint_progress, waypoint_names):
 
 def filter_waypoints_to_unit_interval(progress_values, label_values):
     """Clamp waypoint progress to [0, 1] and keep labels aligned."""
+    # Progress outside [0, 1] does not lie on the plotted route, so ignore it.
     in_range_mask = (progress_values >= 0) & (progress_values <= 1)
     return progress_values[in_range_mask], [
         label for label, keep in zip(label_values, in_range_mask) if keep
@@ -227,6 +246,7 @@ def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names
     if route_count == 0:
         return
 
+    # Convert fractional progress into route indices so labels land on the plotted line.
     waypoint_indices = np.unique(
         np.clip(np.rint(progress_values * (route_count - 1)).astype(int), 0, route_count - 1)
     )
@@ -234,6 +254,7 @@ def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names
     waypoint_lat = np.asarray(average_route["lat"])[waypoint_indices]
     ax.scatter(waypoint_lon, waypoint_lat, s=90, color="black", zorder=5)
 
+    # Offset labels slightly so they remain readable on top of the route line.
     for progress_value, name in zip(progress_values, label_values):
         if not name:
             continue
@@ -253,6 +274,7 @@ def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names
 def build_leg_labels(progress_values, waypoint_labels):
     """Create leg labels from consecutive waypoint names."""
     leg_labels = []
+    # Keep labels usable even if some waypoint names are missing in metadata.
     for leg_index in range(len(progress_values) - 1):
         if leg_index + 1 < len(waypoint_labels):
             leg_labels.append(f"{waypoint_labels[leg_index]}-{waypoint_labels[leg_index + 1]}")
@@ -275,6 +297,7 @@ def compute_first_leg_distance_m(average_route, progress_values):
     if len(progress_values) < 2:
         return np.nan
 
+    # Use the full rhumb-line length to convert fractional progress into meters.
     route_distance_m = sh.cumulative_distance_meters(
         np.asarray(average_route["lat"], dtype=float),
         np.asarray(average_route["lon"], dtype=float),
@@ -286,6 +309,7 @@ def compute_first_leg_distance_m(average_route, progress_values):
 
 def compute_first_leg_delta(values_by_track):
     """Return per-track delta from the mean for the first-leg metric."""
+    # Center first-leg values on the fleet mean so deltas are comparable to later legs.
     if values_by_track.size:
         mean_value = float(np.nanmean(values_by_track))
     else:
@@ -296,6 +320,7 @@ def compute_first_leg_delta(values_by_track):
 def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index, first_leg_value):
     """Extract samples for a specific leg, or the first-leg scalar value."""
     if leg_index == 0:
+        # The first leg uses the gate-based scalar delta to avoid sparse route-window sampling.
         if not np.isfinite(first_leg_value):
             return None
         return np.asarray([first_leg_value], dtype=float)
@@ -303,6 +328,7 @@ def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index
     if progress.size == 0:
         return None
 
+    # Later legs use route-progress windows to select all samples within the leg bounds.
     leg_start, leg_end = get_leg_bounds(progress_values, leg_index)
     leg_mask = (progress >= leg_start) & (progress <= leg_end)
     leg_samples = delta_values[leg_mask]
@@ -314,6 +340,7 @@ def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index
 def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, leg_index, first_leg_delta_by_track):
     """Order tracks by mean value within a leg."""
     leg_ordered = []
+    # Sorting by mean delta makes the box-plot ordering reflect relative performance.
     for track_index, (progress, delta_values) in enumerate(
         zip(track_progress_by_track, delta_by_track)
     ):
@@ -327,93 +354,26 @@ def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, 
     return leg_ordered
 
 
-def compute_whisker_bounds(samples):
-    """Compute Tukey whisker bounds for a sample vector."""
-    clean_samples = samples[np.isfinite(samples)]
-    if clean_samples.size == 0:
-        return None
-    quartiles, _ = sh.quantiles_no_toolbox(clean_samples, [0.25, 0.5, 0.75])
-    q1 = float(quartiles[0])
-    q3 = float(quartiles[2])
-    if not np.isfinite(q1) or not np.isfinite(q3):
-        return None
-    iqr_value = q3 - q1
-    lower_bound = q1 - 1.5 * iqr_value
-    upper_bound = q3 + 1.5 * iqr_value
-    lower_candidates = clean_samples[clean_samples >= lower_bound]
-    upper_candidates = clean_samples[clean_samples <= upper_bound]
-    lower_whisker = float(np.min(lower_candidates)) if lower_candidates.size else float(np.min(clean_samples))
-    upper_whisker = float(np.max(upper_candidates)) if upper_candidates.size else float(np.max(clean_samples))
-    return lower_whisker, upper_whisker
-
-
-def update_whisker_range(current_lower, current_upper, samples):
-    """Expand a (lower, upper) range using whisker bounds from samples."""
-    bounds = compute_whisker_bounds(samples)
-    if bounds is None:
-        return current_lower, current_upper
-    return min(current_lower, bounds[0]), max(current_upper, bounds[1])
-
-
 def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg_value):
     """Return whisker bounds for all legs for a single track."""
     local_lower = np.inf
     local_upper = -np.inf
+    # Aggregate whisker bounds across all legs to keep per-boat y-scales consistent.
     for leg_index in range(len(progress_values) - 1):
         leg_samples = get_leg_samples_for_track(
             progress, delta_values, progress_values, leg_index, first_leg_value
         )
         if leg_samples is None:
             continue
-        local_lower, local_upper = update_whisker_range(local_lower, local_upper, leg_samples)
+        local_lower, local_upper = box_plots.update_whisker_range(
+            local_lower,
+            local_upper,
+            leg_samples,
+            whisker_scale=BOX_PLOT_WHISKER_SCALE,
+        )
     if not np.isfinite(local_lower) or not np.isfinite(local_upper):
         return None
     return local_lower, local_upper
-
-
-def compute_global_plot_range(global_lower, global_upper):
-    """Expand global plot bounds with padding."""
-    if not np.isfinite(global_lower) or not np.isfinite(global_upper):
-        return None
-    global_range = global_upper - global_lower
-    if global_range <= 0:
-        return -1.0, 1.0, 2.0
-    padding = 0.05 * global_range
-    global_lower -= padding
-    global_upper += padding
-    global_range = global_upper - global_lower
-    return global_lower, global_upper, global_range
-
-
-def compute_local_plot_range(local_lower, local_upper, global_range):
-    """Expand local plot bounds with padding and a minimum span."""
-    local_range = local_upper - local_lower
-    if local_range <= 0:
-        local_range = max(global_range * 0.02, 1.0)
-        mid_point = (local_lower + local_upper) / 2.0
-        local_lower = mid_point - 0.5 * local_range
-        local_upper = mid_point + 0.5 * local_range
-        return local_lower, local_upper, local_range
-
-    padding = 0.02 * local_range
-    local_lower -= padding
-    local_upper += padding
-    local_range = local_upper - local_lower
-    return local_lower, local_upper, local_range
-
-
-def compute_units_per_inch(global_range):
-    """Return y-axis units per inch based on default figure height."""
-    base_figsize = plt.rcParams.get("figure.figsize", (6.4, 4.8))
-    base_height = float(base_figsize[1]) if len(base_figsize) > 1 else 4.8
-    return global_range / base_height if global_range > 0 else 1.0
-
-
-def resize_figure_for_range(fig, units_per_inch, local_range):
-    """Resize figure height to keep units-per-inch consistent."""
-    fig_width = fig.get_size_inches()[0]
-    fig_height = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
-    fig.set_size_inches(fig_width, fig_height, forward=True)
 
 
 def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
@@ -424,6 +384,7 @@ def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
         ax.set_xticklabels(["Start", "Finish"], rotation=45, ha="right")
         return
 
+    # Normalize progress and remove any labels that already encode Start/Finish.
     progress_values = np.clip(progress_values, 0.0, 1.0)
     tolerance = 1e-6
 
@@ -439,6 +400,7 @@ def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
         filtered_progress.append(value)
         filtered_labels.append(label)
 
+    # Always include Start and Finish even if the input list omitted them.
     filtered_progress.extend([0.0, 1.0])
     filtered_labels.extend(["Start", "Finish"])
 
@@ -446,6 +408,7 @@ def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
     label_values = [filtered_labels[idx] for idx in np.argsort(progress_values)]
     progress_values = np.sort(progress_values)
 
+    # Merge labels that land on the same progress to avoid overlapping ticks.
     merged_progress = []
     merged_labels = []
     for progress_value, label in zip(progress_values, label_values):
@@ -471,6 +434,7 @@ def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
         merged_progress.append(progress_value)
         merged_labels.append(label)
 
+    # Escape labels when TeX rendering is enabled to avoid LaTeX compile errors.
     if matplotlib.rcParams.get("text.usetex", False):
         merged_labels = [sh.escape_latex_text(lbl) for lbl in merged_labels]
 
@@ -492,6 +456,7 @@ def resample_track_speed(track, window_progress, route_sample_count, filter_alph
     if not valid_mask.any():
         return None
 
+    # Map each speed sample to fractional progress so we can compare across boats.
     progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
     speed_valid = speed[valid_mask]
     progress_unique, unique_index = np.unique(progress, return_index=True)
@@ -499,6 +464,7 @@ def resample_track_speed(track, window_progress, route_sample_count, filter_alph
     if progress_unique.size < 2:
         return None
 
+    # Interpolate onto the window grid then smooth to match the alpha baseline.
     sort_index = np.argsort(progress_unique)
     progress_unique = progress_unique[sort_index]
     speed_unique = speed_unique[sort_index]
@@ -511,6 +477,7 @@ def resample_track_speed(track, window_progress, route_sample_count, filter_alph
 
 def build_alpha_colormap():
     """Return the trimmed 'hot' colormap and normalization for alpha."""
+    # Trim the brightest tail to keep the palette from washing out at high alpha.
     base_cmap = plt.get_cmap("hot", 256)
     cmap_colors = base_cmap(np.linspace(0, 229 / 255, 230))
     cmap_colors[0, :] = np.array([0, 0, 0, 1])
@@ -531,6 +498,7 @@ def add_alpha_tracks(ax, tracks, cmap, norm):
         if longitude.size < 2:
             continue
 
+        # Build per-segment line collections so each segment can be colored by alpha.
         points = np.column_stack([longitude, latitude])
         segments = np.stack([points[:-1], points[1:]], axis=1)
         segment_values = alpha_values[:-1]
@@ -539,6 +507,7 @@ def add_alpha_tracks(ax, tracks, cmap, norm):
         line_collection.set_array(segment_values)
         line_collection.set_picker(True)
         line_collection.set_pickradius(6)
+        # Attach metadata for the custom data-tip handler.
         line_collection.track_name = track["name"]
         line_collection.track_speed = track["speed"]
         ax.add_collection(line_collection)
@@ -547,15 +516,26 @@ def add_alpha_tracks(ax, tracks, cmap, norm):
     return line_collections
 
 
-def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_progress, waypoint_names):
+def plot_colored_tracks(
+    tracks,
+    average_route,
+    speed_window_stats,
+    waypoint_progress,
+    waypoint_names,
+    export_path=None,
+    export_and_close=False,
+):
     """Plot each competitor track colored by local relative speed."""
+    # Disable TeX text rendering for the map to keep annotations lightweight.
     previous_usetex = matplotlib.rcParams.get("text.usetex", False)
     matplotlib.rcParams["text.usetex"] = False
     fig, ax = plt.subplots()
     sh.maximize_figure(fig)
     ax.grid(True)
+    # Preserve metric proportions so the route geometry is not visually distorted.
     sh.apply_local_meter_aspect(ax, average_route)
 
+    # Coastline is purely contextual; crop to track bounds to keep it lightweight.
     plot_coast_geojson_cropped(ax, tracks, "ne_10m_coastline.geojson", 0.15)
 
     rhumb_line, = ax.plot(
@@ -573,6 +553,7 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
     cmap, norm = build_alpha_colormap()
     add_alpha_tracks(ax, tracks, cmap, norm)
 
+    # Colorbar uses the same normalization as the segment coloring.
     scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     scalar_mappable.set_array([])
     colorbar = fig.colorbar(scalar_mappable, ax=ax)
@@ -582,11 +563,29 @@ def plot_colored_tracks(tracks, average_route, speed_window_stats, waypoint_prog
     ax.set_ylabel("Latitude [deg]")
     ax.set_title("Tracks colored by alpha")
 
+    # Enable interactive data tips that combine route position and speed stats.
     sh.enable_manual_datatips(ax, tracks, average_route, speed_window_stats)
+    if export_path is not None:
+        export_path = Path(export_path)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(export_path, bbox_inches="tight")
+    if export_and_close:
+        plt.close(fig)
     matplotlib.rcParams["text.usetex"] = previous_usetex
 
 
-def plot_speed_delta_box_plot(
+@dataclass(frozen=True)
+class SpeedDeltaBoxPlotData:
+    """Shared inputs for speed delta box plots."""
+
+    track_progress_by_track: List[np.ndarray]
+    speed_delta_by_track: List[np.ndarray]
+    progress_values: np.ndarray
+    leg_labels: List[str]
+    first_leg_delta_by_track: np.ndarray
+
+
+def prepare_speed_delta_box_plot_data(
     tracks,
     speed_window_stats,
     way_point_progress,
@@ -594,33 +593,64 @@ def plot_speed_delta_box_plot(
     average_route,
     start_time_utc,
     first_leg_gate_pos,
-    export_dir=None,
-):
-    """Box plots of speed difference per leg, one figure per leg."""
+) -> Optional[SpeedDeltaBoxPlotData]:
+    """Compute shared inputs for speed delta box plots, or return None when unavailable."""
+    # Reuse the same delta samples for both "per leg" and "per boat" plots.
     track_progress_by_track, speed_delta_by_track = compute_speed_delta_samples(
         tracks, speed_window_stats
     )
     if track_progress_by_track is None:
-        return
+        return None
 
+    # Progress values define leg boundaries and also drive label generation.
     progress_values, waypoint_labels = sh.normalize_waypoint_inputs(way_point_progress, way_point_names)
     leg_count = len(progress_values) - 1
     if leg_count < 1 or not tracks:
-        return
+        return None
 
     leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
+    # First-leg averages are gate-based, so compute them separately from route-window deltas.
     first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_speed_by_track = compute_first_leg_speed_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
     first_leg_delta_by_track = compute_first_leg_delta(first_leg_speed_by_track)
 
+    return SpeedDeltaBoxPlotData(
+        track_progress_by_track=track_progress_by_track,
+        speed_delta_by_track=speed_delta_by_track,
+        progress_values=progress_values,
+        leg_labels=leg_labels,
+        first_leg_delta_by_track=first_leg_delta_by_track,
+    )
+
+
+def plot_speed_delta_box_plot(
+    tracks,
+    speed_plot_data: Optional[SpeedDeltaBoxPlotData],
+    export_dir=None,
+    export_and_close=False,
+):
+    """Plot speed-delta box plots per leg using precomputed inputs."""
+    if speed_plot_data is None:
+        return
+
+    track_progress_by_track = speed_plot_data.track_progress_by_track
+    speed_delta_by_track = speed_plot_data.speed_delta_by_track
+    progress_values = speed_plot_data.progress_values
+    leg_labels = speed_plot_data.leg_labels
+    first_leg_delta_by_track = speed_plot_data.first_leg_delta_by_track
+
+    # Iterate each leg separately to produce a dedicated figure per leg.
+    leg_count = len(progress_values) - 1
+
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        apply_boxplot_axis_style(ax)
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
 
+        # Order boats by mean delta so the ranking is visually consistent.
         leg_ordered = build_leg_ordered(
             track_progress_by_track,
             speed_delta_by_track,
@@ -630,12 +660,21 @@ def plot_speed_delta_box_plot(
         )
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
+            if export_dir is not None:
+                export_dir.mkdir(parents=True, exist_ok=True)
+                safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
+                output_path = export_dir / f"speed-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
+                fig.savefig(output_path, bbox_inches="tight")
+            if export_and_close:
+                plt.close(fig)
             continue
 
-        leg_ordered.sort(key=lambda item: item[1])
+        # Reverse ordering so faster (higher) speed deltas appear first on speed plots.
+        leg_ordered.sort(key=lambda item: item[1], reverse=True)
         for plot_index, (track_index, _, speed_leg) in enumerate(leg_ordered, start=1):
             line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
             if leg_index == 0:
+                # First leg is a single scalar delta, plotted as a point.
                 ax.plot(
                     plot_index,
                     speed_leg,
@@ -645,7 +684,15 @@ def plot_speed_delta_box_plot(
                     linestyle="None",
                 )
             else:
-                sh.draw_manual_box_plot(ax, plot_index, speed_leg, line_color)
+                # Later legs have enough samples for a box plot.
+                box_plots.draw_manual_box_plot(
+                    ax,
+                    plot_index,
+                    speed_leg,
+                    line_color,
+                    style=BOX_PLOT_STYLE_SPEED,
+                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
+                )
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
@@ -654,44 +701,36 @@ def plot_speed_delta_box_plot(
             ha="right",
         )
         ax.set_xlim(0.5, len(leg_ordered) + 0.5)
-        ax.set_ylabel(r"$\Delta v\,[\mathrm{kn}]$")
+        ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
         ax.set_title(leg_labels[leg_index])
         if export_dir is not None:
+            # Export per-leg figures with a stable name for reports.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
             output_path = export_dir / f"speed-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
             fig.savefig(output_path, bbox_inches="tight")
+        if export_and_close:
+            plt.close(fig)
 
 
 def plot_speed_delta_box_plot_by_boat(
     tracks,
-    speed_window_stats,
-    way_point_progress,
-    way_point_names,
-    average_route,
-    start_time_utc,
-    first_leg_gate_pos,
+    speed_plot_data: Optional[SpeedDeltaBoxPlotData],
     export_dir=None,
+    export_and_close=False,
 ):
-    """Box plot per boat with each leg on the x-axis (speed delta)."""
-    track_progress_by_track, speed_delta_by_track = compute_speed_delta_samples(
-        tracks, speed_window_stats
-    )
-    if track_progress_by_track is None:
+    """Plot speed-delta box plots per boat using precomputed inputs."""
+    if speed_plot_data is None:
         return
 
-    progress_values, waypoint_labels = sh.normalize_waypoint_inputs(way_point_progress, way_point_names)
+    track_progress_by_track = speed_plot_data.track_progress_by_track
+    speed_delta_by_track = speed_plot_data.speed_delta_by_track
+    progress_values = speed_plot_data.progress_values
+    leg_labels = speed_plot_data.leg_labels
+    first_leg_delta_by_track = speed_plot_data.first_leg_delta_by_track
+
+    # Compute global whisker range first so each boat plot shares a comparable y-scale.
     leg_count = len(progress_values) - 1
-    if leg_count < 1 or not tracks:
-        return
-
-    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
-    first_leg_speed_by_track = compute_first_leg_speed_by_track(
-        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
-    )
-    first_leg_delta_by_track = compute_first_leg_delta(first_leg_speed_by_track)
-
-    leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
     global_lower = float("inf")
     global_upper = float("-inf")
@@ -708,12 +747,13 @@ def plot_speed_delta_box_plot_by_boat(
         global_lower = min(global_lower, leg_range[0])
         global_upper = max(global_upper, leg_range[1])
 
-    global_range_result = compute_global_plot_range(global_lower, global_upper)
+    global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
     if global_range_result is None:
         return
     global_lower, global_upper, global_range = global_range_result
-    units_per_inch = compute_units_per_inch(global_range)
+    units_per_inch = box_plots.compute_units_per_inch(global_range)
 
+    # Each boat gets its own figure with a locally adjusted y-range.
     for track_index, track in enumerate(tracks):
         progress = track_progress_by_track[track_index]
         speed_delta = speed_delta_by_track[track_index]
@@ -725,14 +765,15 @@ def plot_speed_delta_box_plot_by_boat(
         )
         if leg_range is None:
             continue
-        local_lower, local_upper, local_range = compute_local_plot_range(
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
             leg_range[0], leg_range[1], global_range
         )
 
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        resize_figure_for_range(fig, units_per_inch, local_range)
-        apply_boxplot_axis_style(ax)
+        # Resize vertically so value ranges occupy a comparable physical height.
+        box_plots.resize_figure_for_range(fig, units_per_inch, local_range)
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
         for leg_index in range(leg_count):
@@ -746,6 +787,7 @@ def plot_speed_delta_box_plot_by_boat(
             if speed_leg is None:
                 continue
             if leg_index == 0:
+                # First leg is a scalar delta, so plot a single point.
                 ax.plot(
                     leg_index + 1,
                     speed_leg,
@@ -755,20 +797,31 @@ def plot_speed_delta_box_plot_by_boat(
                     linestyle="None",
                 )
             else:
-                sh.draw_manual_box_plot(ax, leg_index + 1, speed_leg, line_color)
+                # Later legs use the full box plot to show variability.
+                box_plots.draw_manual_box_plot(
+                    ax,
+                    leg_index + 1,
+                    speed_leg,
+                    line_color,
+                    style=BOX_PLOT_STYLE_SPEED,
+                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
+                )
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(leg_labels, rotation=45, ha="right")
         ax.set_xlim(0.5, leg_count + 0.5)
-        ax.set_ylabel(r"$\Delta v\,[\mathrm{kn}]$")
+        ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
         ax.set_ylim(local_lower, local_upper)
         ax.set_title(track.get("name", "Boat"))
 
         if export_dir is not None:
+            # Persist per-boat figures for inclusion in reports.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_name = sh.sanitize_filename_label(track.get("name", f"boat-{track_index + 1}"))
             output_path = export_dir / f"speed-delta-boat-{safe_name}.pdf"
             fig.savefig(output_path, bbox_inches="tight")
+        if export_and_close:
+            plt.close(fig)
 
 
 def compute_speed_delta_samples(tracks, speed_window_stats):
@@ -788,6 +841,7 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
     for track in tracks:
         route_index = track["routeIdx"].astype(float)
         speed = track["speed"].astype(float)
+        # Keep only samples that map cleanly to a valid route index.
         valid_mask = (
             np.isfinite(route_index)
             & np.isfinite(speed)
@@ -800,8 +854,10 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
             continue
 
         route_index_valid = route_index[valid_mask]
+        # Convert route index to fractional progress for leg selection.
         progress = (route_index_valid - 1) / (route_sample_count - 1)
         if window_progress.size >= 2:
+            # Interpolate baseline mean speed onto continuous progress values.
             mean_mask = np.isfinite(window_progress) & np.isfinite(mean_speed_by_window)
             if np.count_nonzero(mean_mask) >= 2:
                 mean_speed_for_sample = np.interp(
@@ -814,16 +870,19 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
             else:
                 mean_speed_for_sample = np.full_like(progress, np.nan, dtype=float)
         else:
+            # Fall back to discrete window mapping when window progress is unavailable.
             home_window = np.floor((route_index_valid - 1) / window_step_samples) + 1
             home_window = np.clip(home_window, 1, window_count).astype(int)
             mean_speed_for_sample = mean_speed_by_window[home_window - 1]
 
+        # Reject invalid baselines so they do not pollute the delta samples.
         mean_speed_for_sample = np.where(
             np.isfinite(mean_speed_for_sample) & (mean_speed_for_sample > 0),
             mean_speed_for_sample,
             np.nan,
         )
 
+        # Delta is boat speed relative to the fleet mean at the same progress point.
         speed_delta = speed[valid_mask] - mean_speed_for_sample
         delta_mask = np.isfinite(speed_delta)
         speed_delta = speed_delta[delta_mask]
@@ -842,9 +901,11 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
 def compute_first_leg_speed_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
     """Compute per-boat average speed for the first leg from start to the first gate."""
     speed_values = []
+    # First-leg speed depends on start time and gate crossing times; bail out if missing.
     if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
         return np.full(len(tracks), np.nan, dtype=float)
 
+    # Convert meters to nautical miles to keep speed in knots.
     leg_distance_nm = first_leg_distance_m / 1852.0
     if leg_distance_nm <= 0:
         return np.full(len(tracks), np.nan, dtype=float)
@@ -884,6 +945,7 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
 
     mean_pace_by_window = speed_window_stats.get("meanPaceByWindow")
     if mean_pace_by_window is None or len(mean_pace_by_window) == 0:
+        # Derive mean pace from mean speed when the pace baseline is missing.
         mean_pace_by_window = np.where(
             np.isfinite(mean_speed_by_window) & (mean_speed_by_window > 0),
             60.0 / mean_speed_by_window,
@@ -896,6 +958,7 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
     for track in tracks:
         route_index = track["routeIdx"].astype(float)
         speed = track["speed"].astype(float)
+        # Require positive speed because pace is undefined for zero or negative values.
         valid_mask = (
             np.isfinite(route_index)
             & np.isfinite(speed)
@@ -909,8 +972,10 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
             continue
 
         route_index_valid = route_index[valid_mask]
+        # Progress lets us align pace samples to legs.
         progress = (route_index_valid - 1) / (route_sample_count - 1)
         if window_progress.size >= 2:
+            # Interpolate the baseline pace onto continuous progress.
             mean_mask = np.isfinite(window_progress) & np.isfinite(mean_pace_by_window)
             if np.count_nonzero(mean_mask) >= 2:
                 mean_pace_for_sample = np.interp(
@@ -923,15 +988,18 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
             else:
                 mean_pace_for_sample = np.full_like(progress, np.nan, dtype=float)
         else:
+            # Fall back to discrete window mapping when progress is not available.
             home_window = np.floor((route_index_valid - 1) / window_step_samples) + 1
             home_window = np.clip(home_window, 1, window_count).astype(int)
             mean_pace_for_sample = mean_pace_by_window[home_window - 1]
+        # Filter invalid baselines before computing deltas.
         mean_pace_for_sample = np.where(
             np.isfinite(mean_pace_for_sample) & (mean_pace_for_sample > 0),
             mean_pace_for_sample,
             np.nan,
         )
 
+        # Pace is minutes per NM; delta is relative to the fleet baseline at that progress.
         pace_samples = 60.0 / speed[valid_mask]
         pace_delta = pace_samples - mean_pace_for_sample
         delta_mask = np.isfinite(pace_delta)
@@ -951,9 +1019,11 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
 def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
     """Compute per-boat pace for the first leg from start time to first gate."""
     pace_values = []
+    # First-leg pace depends on the race start time and gate crossing time.
     if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
         return np.full(len(tracks), np.nan, dtype=float)
 
+    # Use nautical miles to keep pace in minutes per NM.
     leg_distance_nm = first_leg_distance_m / 1852.0
     if leg_distance_nm <= 0:
         return np.full(len(tracks), np.nan, dtype=float)
@@ -976,18 +1046,18 @@ def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, 
     return np.asarray(pace_values, dtype=float)
 
 
-def apply_boxplot_axis_style(ax):
-    """Apply y-axis grid/tick styling for box plots."""
-    ax.grid(False)
-    ax.yaxis.set_major_locator(MultipleLocator(10))
-    ax.yaxis.set_minor_locator(MultipleLocator(2))
-    ax.grid(True, axis="y", which="major")
-    ax.grid(True, axis="y", which="minor", linewidth=0.6, alpha=0.5)
-    ax.grid(False, axis="x", which="both")
-    ax.tick_params(axis="y", which="minor", length=2)
+@dataclass(frozen=True)
+class PaceDeltaBoxPlotData:
+    """Shared inputs for pace delta box plots."""
+
+    track_progress_by_track: List[np.ndarray]
+    pace_delta_by_track: List[np.ndarray]
+    progress_values: np.ndarray
+    leg_labels: List[str]
+    first_leg_delta_by_track: np.ndarray
 
 
-def plot_pace_delta_box_plot(
+def prepare_pace_delta_box_plot_data(
     tracks,
     speed_window_stats,
     way_point_progress,
@@ -995,33 +1065,64 @@ def plot_pace_delta_box_plot(
     average_route,
     start_time_utc,
     first_leg_gate_pos,
-    export_dir=None,
-):
-    """Box plots of pace difference per leg, one figure per leg."""
+) -> Optional[PaceDeltaBoxPlotData]:
+    """Compute shared inputs for pace delta box plots, or return None when unavailable."""
+    # Reuse the same pace delta samples for both pace plot variants.
     track_progress_by_track, pace_delta_by_track = compute_pace_delta_samples(
         tracks, speed_window_stats
     )
     if track_progress_by_track is None:
-        return
+        return None
 
+    # Progress values define leg boundaries and label ordering.
     progress_values, waypoint_labels = sh.normalize_waypoint_inputs(way_point_progress, way_point_names)
     leg_count = len(progress_values) - 1
     if leg_count < 1 or not tracks:
-        return
+        return None
 
     leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
+    # First-leg pace comes from start-to-gate timing, not route-window samples.
     first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
     first_leg_pace_by_track = compute_first_leg_pace_by_track(
         tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
     )
     first_leg_delta_by_track = compute_first_leg_delta(first_leg_pace_by_track)
 
+    return PaceDeltaBoxPlotData(
+        track_progress_by_track=track_progress_by_track,
+        pace_delta_by_track=pace_delta_by_track,
+        progress_values=progress_values,
+        leg_labels=leg_labels,
+        first_leg_delta_by_track=first_leg_delta_by_track,
+    )
+
+
+def plot_pace_delta_box_plot(
+    tracks,
+    pace_plot_data: Optional[PaceDeltaBoxPlotData],
+    export_dir=None,
+    export_and_close=False,
+):
+    """Plot pace-delta box plots per leg using precomputed inputs."""
+    if pace_plot_data is None:
+        return
+
+    track_progress_by_track = pace_plot_data.track_progress_by_track
+    pace_delta_by_track = pace_plot_data.pace_delta_by_track
+    progress_values = pace_plot_data.progress_values
+    leg_labels = pace_plot_data.leg_labels
+    first_leg_delta_by_track = pace_plot_data.first_leg_delta_by_track
+
+    # Generate one figure per leg for easier inspection.
+    leg_count = len(progress_values) - 1
+
     for leg_index in range(leg_count - 1, -1, -1):
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        apply_boxplot_axis_style(ax)
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
 
+        # Order boats by mean pace delta to emphasize relative ranking.
         leg_ordered = build_leg_ordered(
             track_progress_by_track,
             pace_delta_by_track,
@@ -1031,12 +1132,20 @@ def plot_pace_delta_box_plot(
         )
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
+            if export_dir is not None:
+                export_dir.mkdir(parents=True, exist_ok=True)
+                safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
+                output_path = export_dir / f"pace-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
+                fig.savefig(output_path, bbox_inches="tight")
+            if export_and_close:
+                plt.close(fig)
             continue
 
         leg_ordered.sort(key=lambda item: item[1])
         for plot_index, (track_index, _, pace_leg) in enumerate(leg_ordered, start=1):
             line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
             if leg_index == 0:
+                # First leg is a single scalar delta, plotted as a point.
                 ax.plot(
                     plot_index,
                     pace_leg,
@@ -1046,7 +1155,15 @@ def plot_pace_delta_box_plot(
                     linestyle="None",
                 )
             else:
-                sh.draw_manual_box_plot(ax, plot_index, pace_leg, line_color)
+                # Later legs use full box plots to show spread.
+                box_plots.draw_manual_box_plot(
+                    ax,
+                    plot_index,
+                    pace_leg,
+                    line_color,
+                    style=BOX_PLOT_STYLE_PACE,
+                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
+                )
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
@@ -1055,45 +1172,36 @@ def plot_pace_delta_box_plot(
             ha="right",
         )
         ax.set_xlim(0.5, len(leg_ordered) + 0.5)
-        ax.set_ylabel(r"$\Delta p\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
+        ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
         ax.set_title(leg_labels[leg_index])
         if export_dir is not None:
+            # Export per-leg figures for report inclusion.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
             output_path = export_dir / f"pace-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
             fig.savefig(output_path, bbox_inches="tight")
+        if export_and_close:
+            plt.close(fig)
 
 
 def plot_pace_delta_box_plot_by_boat(
     tracks,
-    speed_window_stats,
-    way_point_progress,
-    way_point_names,
-    average_route,
-    start_time_utc,
-    first_leg_gate_pos,
+    pace_plot_data: Optional[PaceDeltaBoxPlotData],
     export_dir=None,
-    latex_include_path=None,
+    export_and_close=False,
 ):
-    """Box plot per boat with each leg on the x-axis."""
-    track_progress_by_track, pace_delta_by_track = compute_pace_delta_samples(
-        tracks, speed_window_stats
-    )
-    if track_progress_by_track is None:
+    """Plot pace-delta box plots per boat using precomputed inputs."""
+    if pace_plot_data is None:
         return
 
-    progress_values, waypoint_labels = sh.normalize_waypoint_inputs(way_point_progress, way_point_names)
+    track_progress_by_track = pace_plot_data.track_progress_by_track
+    pace_delta_by_track = pace_plot_data.pace_delta_by_track
+    progress_values = pace_plot_data.progress_values
+    leg_labels = pace_plot_data.leg_labels
+    first_leg_delta_by_track = pace_plot_data.first_leg_delta_by_track
+
+    # Compute a shared y-scale so boat plots are comparable.
     leg_count = len(progress_values) - 1
-    if leg_count < 1 or not tracks:
-        return
-
-    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
-    first_leg_pace_by_track = compute_first_leg_pace_by_track(
-        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
-    )
-    first_leg_delta_by_track = compute_first_leg_delta(first_leg_pace_by_track)
-
-    leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
     global_lower = float("inf")
     global_upper = float("-inf")
@@ -1110,15 +1218,11 @@ def plot_pace_delta_box_plot_by_boat(
         global_lower = min(global_lower, leg_range[0])
         global_upper = max(global_upper, leg_range[1])
 
-    global_range_result = compute_global_plot_range(global_lower, global_upper)
+    global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
     if global_range_result is None:
         return
     global_lower, global_upper, global_range = global_range_result
-    units_per_inch = compute_units_per_inch(global_range)
-
-    latex_lines = []
-    if latex_include_path is not None:
-        latex_lines.append("% Auto-generated by silver.py. Do not edit by hand.\n")
+    units_per_inch = box_plots.compute_units_per_inch(global_range)
 
     for track_index, track in enumerate(tracks):
         progress = track_progress_by_track[track_index]
@@ -1131,14 +1235,15 @@ def plot_pace_delta_box_plot_by_boat(
         )
         if leg_range is None:
             continue
-        local_lower, local_upper, local_range = compute_local_plot_range(
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
             leg_range[0], leg_range[1], global_range
         )
 
         fig, ax = plt.subplots()
         sh.maximize_figure(fig)
-        resize_figure_for_range(fig, units_per_inch, local_range)
-        apply_boxplot_axis_style(ax)
+        # Maintain a consistent data-to-physical-height ratio across boats.
+        box_plots.resize_figure_for_range(fig, units_per_inch, local_range)
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
         for leg_index in range(leg_count):
@@ -1152,6 +1257,7 @@ def plot_pace_delta_box_plot_by_boat(
             if pace_leg is None:
                 continue
             if leg_index == 0:
+                # First leg uses a single scalar delta.
                 ax.plot(
                     leg_index + 1,
                     pace_leg,
@@ -1161,41 +1267,40 @@ def plot_pace_delta_box_plot_by_boat(
                     linestyle="None",
                 )
             else:
-                sh.draw_manual_box_plot(ax, leg_index + 1, pace_leg, line_color)
+                # Later legs use a box plot to show distribution.
+                box_plots.draw_manual_box_plot(
+                    ax,
+                    leg_index + 1,
+                    pace_leg,
+                    line_color,
+                    style=BOX_PLOT_STYLE_PACE,
+                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
+                )
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(leg_labels, rotation=45, ha="right")
         ax.set_xlim(0.5, leg_count + 0.5)
-        ax.set_ylabel(r"$\Delta p\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
+        ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
         ax.set_ylim(local_lower, local_upper)
         ax.set_title(track.get("name", "Boat"))
 
         if export_dir is not None:
+            # Export per-boat figures for documentation.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_name = sh.sanitize_filename_label(track.get("name", f"boat-{track_index + 1}"))
             output_path = export_dir / f"pace-delta-boat-{safe_name}.pdf"
             fig.savefig(output_path, bbox_inches="tight")
-
-            if latex_include_path is not None:
-                escaped_name = sh.escape_latex_text(track.get("name", "Boat"))
-                latex_lines.extend(
-                    [
-                        "\\clearpage\n",
-                        f"\\subsection*{{Boat: {escaped_name}}}\n",
-                        "\\begin{figure}[H]\n",
-                        "\\centering\n",
-                        f"\\includegraphics[width=\\linewidth]{{figures/{output_path.name}}}\n",
-                        f"\\caption{{Pace delta by leg for {escaped_name}.}}\n",
-                        "\\end{figure}\n",
-                    ]
-                )
-
-    if latex_include_path is not None:
-        latex_include_path.write_text("".join(latex_lines), encoding="utf-8")
+        if export_and_close:
+            plt.close(fig)
 
 
 def plot_speed_range_along_route(
-    tracks, speed_window_stats, waypoint_progress=None, waypoint_names=None, export_path=None
+    tracks,
+    speed_window_stats,
+    waypoint_progress=None,
+    waypoint_names=None,
+    export_path=None,
+    export_and_close=False,
 ):
     """Debug plot of speed vs progress with min/max/mean envelope."""
     if not speed_window_stats or speed_window_stats.get("routeSampleCount", 0) < 2:
@@ -1209,6 +1314,7 @@ def plot_speed_range_along_route(
 
     window_progress = np.asarray(speed_window_stats.get("windowProgress", []), dtype=float)
     if window_progress.size == 0:
+        # Fall back to window midpoints when explicit progress is not stored.
         window_start_index = speed_window_stats["windowStartIndex"]
         window_end_index = speed_window_stats["windowEndIndex"]
         window_center = (window_start_index + window_end_index) / 2
@@ -1220,12 +1326,14 @@ def plot_speed_range_along_route(
 
     default_color = plt.cm.hsv(np.linspace(0, 1, max(len(tracks), 1)))
     for idx, track in enumerate(tracks):
+        # Resample on the same grid as the window stats to compare with the envelope.
         speed_on_grid = resample_track_speed(track, window_progress, route_sample_count, filter_alpha)
         if speed_on_grid is None:
             continue
         line_color = track["color"] or default_color[idx]
         ax.plot(window_progress, speed_on_grid, color=line_color, linewidth=0.8, label=track["name"])
 
+    # Envelope lines show fleet-wide min/mean/max at each progress window.
     ax.plot(window_progress, min_speed, "b-", linewidth=1.5, label="Slowest speed (min)")
     ax.plot(window_progress, max_speed, "r-", linewidth=1.5, label="Fastest speed (max)")
     if mean_speed.size:
@@ -1233,15 +1341,17 @@ def plot_speed_range_along_route(
 
     apply_waypoint_ticks(ax, waypoint_progress, waypoint_names)
 
-    ax.set_xlabel(r"$s$ (progress)")
-    ax.set_ylabel(r"$v\,[\mathrm{kn}]$")
-    ax.set_title(r"$v(s)$ with min/mean/max envelope")
+    ax.set_xlabel(r"$\mathrm{Progress}\,[-]$")
+    ax.set_ylabel(r"$\mathrm{Speed}\,[\mathrm{kn}]$")
+    ax.set_title(r"$\mathrm{Speed}$ with min/mean/max envelope")
     ax.legend(loc="best")
 
     if export_path is not None:
         export_path = Path(export_path)
         export_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(export_path, bbox_inches="tight")
+    if export_and_close:
+        plt.close(fig)
 
 
 def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
@@ -1249,6 +1359,7 @@ def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
     if not Path(geojson_file).is_file():
         return
 
+    # Use the track bounds to crop the coastline and avoid drawing irrelevant geometry.
     all_lat = np.concatenate([track["lat"] for track in tracks if track["lat"].size])
     all_lon = np.concatenate([track["lon"] for track in tracks if track["lon"].size])
     finite_mask = np.isfinite(all_lat) & np.isfinite(all_lon)
@@ -1275,6 +1386,7 @@ def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
         for line in line_strings:
             if line.size == 0:
                 continue
+            # Mask points outside the bounding box instead of clipping geometry in-place.
             lon = line[:, 0]
             lat = line[:, 1]
             inside = (lat >= min_lat) & (lat <= max_lat) & (lon >= min_lon) & (lon <= max_lon)

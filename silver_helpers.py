@@ -6,18 +6,19 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 def read_tracking_csv_as_struct(filename):
     """Read tracking CSV into a dict-of-columns."""
     data = {}
+    # Read into column-oriented storage so later filtering is vectorized and fast.
     with open(filename, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             return data
         data = {name: [] for name in reader.fieldnames}
         for row in reader:
+            # Preserve raw strings here; parsing happens in the typed converters.
             for name in data:
                 data[name].append(row.get(name, ""))
     return data
@@ -31,6 +32,7 @@ def build_tracks(tracking_data, id_field, lat_field, lon_field, time_field, spee
     sample_time = to_time_column(tracking_data.get(time_field, []))
     speed_value = to_double_column(tracking_data.get(speed_field, []))
 
+    # Filter out rows with missing identifiers or invalid coordinates/timestamps.
     valid_mask = (
         (track_id != "")
         & np.isfinite(latitude)
@@ -45,6 +47,7 @@ def build_tracks(tracking_data, id_field, lat_field, lon_field, time_field, spee
     sample_time = sample_time[valid_mask]
     speed_value = speed_value[valid_mask]
 
+    # Preserve the input ordering of track IDs to keep plots stable across runs.
     unique_ids = []
     seen = set()
     for value in track_id:
@@ -54,6 +57,7 @@ def build_tracks(tracking_data, id_field, lat_field, lon_field, time_field, spee
 
     tracks = []
     for track_value in unique_ids:
+        # Each track dict becomes the shared schema for downstream analysis.
         track_mask = track_id == track_value
         track_time = sample_time[track_mask]
         sort_index = np.argsort(track_time)
@@ -75,6 +79,7 @@ def build_tracks(tracking_data, id_field, lat_field, lon_field, time_field, spee
 
 def convert_speed_to_knots(tracks):
     """Convert speed fields from km/h to knots."""
+    # Normalize units once so all downstream stats use consistent nautical units.
     kmh_to_knots = 0.539956803
     for track in tracks:
         track["speed"] = track["speed"] * kmh_to_knots
@@ -83,6 +88,7 @@ def convert_speed_to_knots(tracks):
 
 def apply_track_names(tracks, track_name_map):
     """Set track name using mapping keyed by tracked_object_id."""
+    # Human-readable names improve legends and exports without changing IDs.
     for track in tracks:
         if track["id"] in track_name_map:
             track["name"] = track_name_map[track["id"]]
@@ -91,6 +97,7 @@ def apply_track_names(tracks, track_name_map):
 
 def apply_track_colors(tracks, track_color_map):
     """Set track color using mapping keyed by boat name."""
+    # Colors are attached once so every plot can reuse them consistently.
     for track in tracks:
         if track["name"] in track_color_map:
             track["color"] = track_color_map[track["name"]]
@@ -102,6 +109,7 @@ def load_race_metadata(metadata_path):
     metadata_path = Path(metadata_path)
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+    # Metadata drives naming, colors, and timing offsets in one place.
     with metadata_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -111,6 +119,7 @@ def parse_local_time_to_utc(time_text, local_offset_hours):
     if not time_text:
         return None
     try:
+        # Metadata stores local time; convert once so elapsed times are accurate.
         local_tz = timezone(timedelta(hours=local_offset_hours))
         local_time = datetime.strptime(time_text, "%d/%m/%Y %H:%M:%S").replace(tzinfo=local_tz)
     except ValueError:
@@ -120,6 +129,7 @@ def parse_local_time_to_utc(time_text, local_offset_hours):
 
 def build_boat_color_map(boat_names, boat_colors):
     """Normalize boat color mapping from metadata."""
+    # Accept either explicit name->color dictionaries or ordered color lists.
     if isinstance(boat_colors, dict):
         return {name: tuple(color) for name, color in boat_colors.items()}
     if isinstance(boat_colors, list):
@@ -133,12 +143,15 @@ def map_track_points_to_route(tracks, average_route, route_search_window_half_wi
     route_lon = np.asarray(average_route["lon"])
     route_sample_count = len(route_lat)
 
+    # Windowed search limits large jumps when the nearest neighbor is ambiguous.
     use_search_window = route_search_window_half_width > 0
+    # Detect looped routes so progress can wrap without being forced to monotonic.
     route_endpoint_distance = haversine_meters(
         route_lat[0], route_lon[0], route_lat[-1], route_lon[-1]
     )
     route_is_loop = route_endpoint_distance < 500
 
+    # Time-derived progress keeps early samples from snapping to distant route points.
     time_alignment_threshold = max(10, round(0.35 * route_sample_count))
 
     for track in tracks:
@@ -151,6 +164,7 @@ def map_track_points_to_route(tracks, average_route, route_search_window_half_wi
             track_start_time = sample_time[0]
             track_end_time = sample_time[-1]
             if track_end_time > track_start_time:
+                # Map elapsed time onto route index as a gentle prior.
                 time_progress = (sample_time - track_start_time) / (
                     track_end_time - track_start_time
                 )
@@ -162,6 +176,7 @@ def map_track_points_to_route(tracks, average_route, route_search_window_half_wi
         route_distance_by_sample = np.full(latitude.size, np.nan, dtype=float)
 
         if latitude.size > 0:
+            # Initialize with the closest route point to the first sample.
             distance_to_route = haversine_meters(
                 latitude[0], longitude[0], route_lat, route_lon
             )
@@ -197,8 +212,10 @@ def map_track_points_to_route(tracks, average_route, route_search_window_half_wi
 
             expected_index = expected_route_index_by_time[sample_index]
             if np.isfinite(expected_index) and abs(best_route_index - expected_index) > time_alignment_threshold:
+                # If the closest point is far from the time-based estimate, prefer the estimate.
                 best_route_index = int(expected_index)
             else:
+                # Enforce non-decreasing progress unless we are wrapping around a loop.
                 if best_route_index < previous_route_index:
                     if route_is_loop and previous_route_index > 0.9 * route_sample_count and \
                             best_route_index < 0.1 * route_sample_count:
@@ -222,6 +239,7 @@ def remove_route_index_spikes(tracks, route_sample_count):
     if route_sample_count < 3 or not tracks:
         return tracks
 
+    # Spikes usually come from a single bad nearest-neighbor match in noisy data.
     spike_threshold = max(50, round(0.02 * route_sample_count))
 
     for track in tracks:
@@ -233,8 +251,10 @@ def remove_route_index_spikes(tracks, route_sample_count):
         typical_step = np.nanmedian(step_sizes) if np.isfinite(step_sizes).any() else 1
         if not np.isfinite(typical_step) or typical_step < 1:
             typical_step = 1
+        # Use a track-specific threshold so slow and fast boats are treated fairly.
         spike_threshold_for_track = max(spike_threshold, round(10 * typical_step))
 
+        # Two passes catch single-point spikes without over-smoothing real jumps.
         for _ in range(2):
             previous_index = route_index[:-2]
             current_index = route_index[1:-1]
@@ -247,6 +267,7 @@ def remove_route_index_spikes(tracks, route_sample_count):
             )
 
             if spike_mask.any():
+                # Replace spikes with the midpoint of neighboring indices.
                 corrected_index = np.round(
                     (previous_index[spike_mask] + next_index[spike_mask]) / 2
                 )
@@ -267,6 +288,7 @@ def compute_sample_alpha_by_route_windows(
     if route_sample_count < 2:
         return tracks, {}
 
+    # Windows define a fleet-wide baseline along the route for normalization.
     window_count = int(math.floor((route_sample_count - window_sample_count) / window_step_samples) + 1)
     if window_count < 1:
         window_count = 1
@@ -277,6 +299,7 @@ def compute_sample_alpha_by_route_windows(
     window_center_index = (window_start_index + window_end_index) / 2
     window_progress = (window_center_index - 1) / (route_sample_count - 1)
 
+    # Collect each boat's speed on the same progress grid to compute fleet stats.
     speed_on_grid_by_track = []
 
     for track in tracks:
@@ -294,6 +317,7 @@ def compute_sample_alpha_by_route_windows(
         progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
         speed_valid = speed[valid_mask]
 
+        # De-duplicate progress values to keep interpolation well-behaved.
         progress_unique, unique_index = np.unique(progress, return_index=True)
         speed_unique = speed_valid[unique_index]
         if progress_unique.size < 2:
@@ -314,6 +338,7 @@ def compute_sample_alpha_by_route_windows(
     mean_pace_by_window = np.full(window_count, np.nan)
 
     if speed_on_grid_by_track:
+        # Fleet stats are computed per window over all available boats.
         speed_grid = np.vstack(speed_on_grid_by_track)
         finite_counts = np.sum(np.isfinite(speed_grid), axis=0)
         valid_windows = finite_counts > 0
@@ -326,8 +351,10 @@ def compute_sample_alpha_by_route_windows(
             speeds_here = speed_grid[:, window_index]
             speeds_here = speeds_here[np.isfinite(speeds_here) & (speeds_here > 0)]
             if speeds_here.size:
+                # Mean pace is derived from speed to avoid bias from low speeds.
                 mean_pace_by_window[window_index] = np.mean(60.0 / speeds_here)
 
+    # Smooth the windowed stats to reduce jaggedness from sparse data.
     min_speed_by_window = lowpass_forward_backward(min_speed_by_window, filter_alpha)
     max_speed_by_window = lowpass_forward_backward(max_speed_by_window, filter_alpha)
     mean_speed_by_window = lowpass_forward_backward(mean_speed_by_window, filter_alpha)
@@ -337,6 +364,7 @@ def compute_sample_alpha_by_route_windows(
     count_squared_error = np.zeros(window_count)
 
     for speed_on_grid in speed_on_grid_by_track:
+        # Use smoothed mean speed as the baseline for per-window variability.
         squared_error = (speed_on_grid - mean_speed_by_window) ** 2
         filtered_squared_error = lowpass_forward_backward(squared_error, filter_alpha)
         finite_mask = np.isfinite(filtered_squared_error)
@@ -383,6 +411,7 @@ def compute_sample_alpha_by_route_windows(
             max_mask = np.isfinite(window_progress) & np.isfinite(max_speed_by_window)
 
             if np.count_nonzero(min_mask) >= 2 and np.count_nonzero(max_mask) >= 2:
+                # Interpolate min/max envelopes onto per-sample progress positions.
                 min_speed = np.interp(
                     progress,
                     window_progress[min_mask],
@@ -404,6 +433,7 @@ def compute_sample_alpha_by_route_windows(
             denom = max_speed - min_speed
             alpha_values = (speed[valid_indices] - min_speed) / denom
             invalid_alpha = ~np.isfinite(alpha_values) | (denom <= 0)
+            # Neutral gray when the normalization is not meaningful.
             alpha_values[invalid_alpha] = 0.5
             alpha[valid_indices] = alpha_values
 
@@ -423,6 +453,7 @@ def lowpass_forward_backward(signal, filter_alpha):
     if filter_alpha > 1:
         filter_alpha = 1
 
+    # Fill gaps so the filter does not propagate NaNs through the series.
     finite_mask = np.isfinite(signal)
     if not finite_mask.any():
         return signal
@@ -447,12 +478,14 @@ def lowpass_forward_backward(signal, filter_alpha):
     for idx in range(backward.size - 2, -1, -1):
         backward[idx] = filter_alpha * forward[idx] + (1 - filter_alpha) * backward[idx + 1]
 
+    # Restore NaNs so downstream logic can respect missing data.
     backward[~finite_mask] = np.nan
     return backward
 
 
 def maximize_figure(fig):
     """Best-effort maximize across backends."""
+    # Matplotlib backends expose different window APIs; try the common ones quietly.
     try:
         manager = fig.canvas.manager
         if manager is None:
@@ -487,6 +520,7 @@ def apply_local_meter_aspect(ax, average_route):
         ax.set_aspect("equal", adjustable="box")
         return
 
+    # Longitude degrees shrink with latitude; scale so meters look square.
     mean_lat = float(np.nanmean(route_lat))
     meters_per_degree_lat = 111_320.0
     meters_per_degree_lon = meters_per_degree_lat * math.cos(math.radians(mean_lat))
@@ -500,6 +534,7 @@ def apply_local_meter_aspect(ax, average_route):
 
 def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_radius_m=250.0):
     """Fallback click-tooltips when mplcursors is unreliable."""
+    # Use a lightweight picker so interactive inspection works without extra dependencies.
     route_lon = np.asarray(average_route.get("lon", []), dtype=float)
     route_lat = np.asarray(average_route.get("lat", []), dtype=float)
     if route_lon.size == 0 or route_lat.size == 0:
@@ -548,6 +583,7 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
             latitude = latitude[valid_mask]
             speed = speed[valid_mask]
 
+            # Compute distance in meters to find the nearest sample in this track.
             dx = (longitude - click_lon) * cos_lat * meters_per_degree
             dy = (latitude - click_lat) * meters_per_degree
             dist2 = dx * dx + dy * dy
@@ -566,6 +602,7 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
 
         radius2 = pick_radius_m * pick_radius_m
         if best_track_dist2 <= best_route_dist2 and best_track_dist2 <= radius2:
+            # Prefer boat info when the click is closer to a track than the route.
             speed_text = "N/A"
             if best_track_speed is not None and np.isfinite(best_track_speed):
                 speed_text = f"{best_track_speed:.2f}"
@@ -573,6 +610,7 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
             annotation.set_text(f"Boat: {best_track_name}\nSpeed: {speed_text}")
             annotation.set_visible(True)
         elif best_route_dist2 <= radius2 and route_index is not None:
+            # Otherwise, display baseline min/max around the nearest route point.
             if route_lon.size > 1:
                 progress = route_index / (route_lon.size - 1)
             else:
@@ -619,74 +657,13 @@ def enable_manual_datatips(ax, tracks, average_route, speed_window_stats, pick_r
     ax.figure.canvas.mpl_connect("button_press_event", on_click)
 
 
-def draw_manual_box_plot(ax, x_position, samples, line_color):
-    """Draw a box plot at a fixed x position (median line + mean dot)."""
-    if samples.size == 0:
-        return
-
-    quartiles, median_value = quantiles_no_toolbox(samples, [0.25, 0.5, 0.75])
-    q1, q3 = quartiles[0], quartiles[2]
-    iqr_value = q3 - q1
-    lower_bound = q1 - 1.5 * iqr_value
-    upper_bound = q3 + 1.5 * iqr_value
-
-    lower_whisker = np.min(samples[samples >= lower_bound]) if np.any(samples >= lower_bound) else np.min(samples)
-    upper_whisker = np.max(samples[samples <= upper_bound]) if np.any(samples <= upper_bound) else np.max(samples)
-
-    box_half_width = 0.3
-    ax.add_patch(
-        plt.Rectangle(
-            (x_position - box_half_width, q1),
-            2 * box_half_width,
-            q3 - q1,
-            facecolor=line_color,
-            edgecolor=line_color,
-            alpha=0.2,
-        )
-    )
-    ax.plot(
-        [x_position - box_half_width, x_position + box_half_width],
-        [median_value, median_value],
-        color=line_color,
-        linewidth=1.5,
-    )
-    mean_value = float(np.mean(samples))
-    ax.plot(
-        x_position,
-        mean_value,
-        marker="o",
-        markersize=4,
-        markerfacecolor=line_color,
-        markeredgecolor=line_color,
-    )
-    ax.plot(
-        [x_position, x_position],
-        [lower_whisker, upper_whisker],
-        color=line_color,
-        linewidth=1.0,
-    )
-    cap_width = box_half_width * 0.8
-    ax.plot(
-        [x_position - cap_width, x_position + cap_width],
-        [lower_whisker, lower_whisker],
-        color=line_color,
-        linewidth=1.0,
-    )
-    ax.plot(
-        [x_position - cap_width, x_position + cap_width],
-        [upper_whisker, upper_whisker],
-        color=line_color,
-        linewidth=1.0,
-    )
-
-
-
 def normalize_waypoint_inputs(way_point_progress, way_point_names):
     """Normalize waypoint progress/labels for plotting."""
     progress_values = np.asarray(way_point_progress, dtype=float).flatten()
     if progress_values.size == 0:
         return progress_values, []
 
+    # Provide fallback labels so plots remain readable without metadata names.
     waypoint_labels = [f"WP{i+1}" for i in range(len(progress_values))]
     if way_point_names:
         waypoint_labels = list(way_point_names)
@@ -699,6 +676,7 @@ def normalize_waypoint_inputs(way_point_progress, way_point_names):
 
 def sanitize_filename_label(label):
     """Make a label safe for filenames (ASCII, LaTeX-friendly)."""
+    # Transliterate common non-ASCII characters to keep filenames portable.
     text = str(label).strip().lower()
     text = text.replace("æ", "ae").replace("ø", "o").replace("å", "aa")
     text = re.sub(r"[^a-z0-9]+", "-", text)
@@ -710,6 +688,7 @@ def escape_latex_text(text):
     """Escape characters that are special in LaTeX text."""
     if text is None:
         return ""
+    # Escape at the string level to keep LaTeX includes robust.
     escaped = str(text)
     replacements = {
         "\\": r"\textbackslash{}",
@@ -726,36 +705,9 @@ def escape_latex_text(text):
     return escaped
 
 
-def quantiles_no_toolbox(values, quantile_points):
-    """Linear-interpolated quantiles without toolboxes."""
-    sorted_values = np.sort(np.asarray(values, dtype=float))
-    sample_count = sorted_values.size
-    if sample_count == 0:
-        return np.full(len(quantile_points), np.nan), np.nan
-
-    quantiles = []
-    for p in quantile_points:
-        position = 1 + (sample_count - 1) * p
-        lower_index = int(math.floor(position)) - 1
-        upper_index = int(math.ceil(position)) - 1
-        lower_index = max(0, min(sample_count - 1, lower_index))
-        upper_index = max(0, min(sample_count - 1, upper_index))
-        if lower_index == upper_index:
-            quantiles.append(sorted_values[lower_index])
-        else:
-            weight = position - math.floor(position)
-            value = sorted_values[lower_index] + weight * (
-                sorted_values[upper_index] - sorted_values[lower_index]
-            )
-            quantiles.append(value)
-
-    quantiles = np.asarray(quantiles, dtype=float)
-    median_value = quantiles[quantile_points.index(0.5)] if 0.5 in quantile_points else np.nan
-    return quantiles, median_value
-
-
 def haversine_meters(lat1, lon1, lat2, lon2):
     """Great-circle distance (meters). Supports scalar/vector mixing."""
+    # Haversine is stable for short distances and vectorizes well with numpy.
     earth_radius = 6371000.0
     lat1 = np.radians(lat1)
     lon1 = np.radians(lon1)
@@ -770,12 +722,14 @@ def haversine_meters(lat1, lon1, lat2, lon2):
 
 def to_string_column(values):
     """Normalize ids to a string numpy array."""
+    # Preserve empty strings instead of NaN to keep id comparisons simple.
     return np.array([str(value).strip() if value is not None else "" for value in values], dtype=object)
 
 
 def to_double_column(values):
     """Convert to float numpy array with NaNs for invalid entries."""
     output = []
+    # Treat empty strings and invalid values as NaN so filters can drop them.
     for value in values:
         if value is None:
             output.append(np.nan)
@@ -793,6 +747,7 @@ def to_double_column(values):
 
 def to_time_column(values):
     """Convert time strings to POSIX seconds (UTC)."""
+    # Keep conversion in one place so downstream code stays time-zone agnostic.
     output = []
     for value in values:
         output.append(parse_utc_time(value))
@@ -807,11 +762,13 @@ def parse_utc_time(value):
     if not text:
         return np.nan
     try:
+        # Fast path for the known telemetry format.
         dt = datetime.strptime(text, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except ValueError:
         pass
     try:
+        # Fall back to ISO-like strings with optional timezone suffixes.
         cleaned = text.replace(" UTC", "").replace("Z", "")
         dt = datetime.fromisoformat(cleaned)
         if dt.tzinfo is None:
@@ -827,6 +784,7 @@ def load_geo_data(geo_data_path):
     if not geo_data_path.exists():
         raise FileNotFoundError(f"Geo data file not found: {geo_data_path}")
 
+    # GeoJSON is expected to contain a rhumb line plus gate line features.
     geo_data = json.loads(geo_data_path.read_text(encoding="utf-8"))
     features = geo_data.get("features", []) if isinstance(geo_data, dict) else []
 
@@ -841,6 +799,7 @@ def load_geo_data(geo_data_path):
         feature_type = str(properties.get("type", "")).strip().lower()
 
         if feature_type == "waypoint":
+            # Gates are stored as small line segments that intersect the rhumb line.
             gate_coords = _normalize_gate_coords(coordinates)
             gate_index = _parse_gate_index(properties)
             waypoint_gates.append(
@@ -849,6 +808,7 @@ def load_geo_data(geo_data_path):
             continue
 
         if geometry_type == "LineString":
+            # Prefer the explicitly named rhumb line, fall back to the first line string.
             if route_coords is None or name.lower().startswith("rhumb"):
                 route_coords = [list(point) for point in coordinates]
 
@@ -870,6 +830,7 @@ def compute_average_route(route_sample_count, geo_data_path):
     if latitude.size < 2:
         raise ValueError("Rhumb line has insufficient valid coordinates.")
 
+    # Collapse duplicate distances to keep interpolation monotonic.
     distance_along = cumulative_distance_meters(latitude, longitude)
     keep_mask = np.concatenate([[True], np.diff(distance_along) > 0])
     latitude = latitude[keep_mask]
@@ -878,6 +839,7 @@ def compute_average_route(route_sample_count, geo_data_path):
     if distance_along.size < 2 or distance_along[-1] <= 0:
         raise ValueError("Rhumb line distance is not sufficient for resampling.")
 
+    # Resample to a uniform distance grid so progress is linear in meters.
     total_distance = distance_along[-1]
     sample_distance = np.linspace(0, total_distance, route_sample_count)
     resampled_lat = np.interp(sample_distance, distance_along, latitude)
@@ -894,6 +856,7 @@ def _normalize_gate_coords(coordinates):
     gate_coords = [list(point) for point in coordinates]
     if len(gate_coords) < 2:
         raise ValueError("Waypoint gate must have two coordinate points.")
+    # Only the first two points define the gate line segment.
     return gate_coords[:2]
 
 
@@ -904,6 +867,7 @@ def _parse_gate_index(properties):
             return int(properties["index"])
         except (TypeError, ValueError):
             pass
+    # Fall back to keys like "index 3" when metadata is inconsistent.
     for key in properties.keys():
         match = re.match(r"^index\\s*(\\d+)$", str(key).strip())
         if match:
@@ -913,6 +877,7 @@ def _parse_gate_index(properties):
 
 def _segment_intersection_fraction(p_start, p_end, q_start, q_end):
     """Return fractional position along p segment where it intersects q segment."""
+    # Segment intersection is used for gate crossings and waypoint projection.
     px, py = p_start
     rx, ry = (p_end[0] - px, p_end[1] - py)
     qx, qy = q_start
@@ -938,6 +903,7 @@ def compute_gate_crossings(tracks, waypoint_gates):
         longitude = np.asarray(track["lon"], dtype=float)
         latitude = np.asarray(track["lat"], dtype=float)
         time_values = np.asarray(track["t"], dtype=float)
+        # Ignore samples without valid coordinates or timestamps.
         valid_mask = np.isfinite(longitude) & np.isfinite(latitude) & np.isfinite(time_values)
         longitude = longitude[valid_mask]
         latitude = latitude[valid_mask]
@@ -948,6 +914,7 @@ def compute_gate_crossings(tracks, waypoint_gates):
             gate_times_by_track.append(gate_times)
             continue
 
+        # Track crossings in order so each gate uses the earliest valid segment.
         start_index = 0
         for gate_idx, gate in enumerate(waypoint_gates):
             gate_coords = gate["coords"]
@@ -956,6 +923,7 @@ def compute_gate_crossings(tracks, waypoint_gates):
 
             crossing_time = np.nan
             for sample_index in range(start_index, longitude.size - 1):
+                # Check segment-by-segment intersection with the gate line.
                 p_start = (longitude[sample_index], latitude[sample_index])
                 p_end = (longitude[sample_index + 1], latitude[sample_index + 1])
                 fraction = _segment_intersection_fraction(p_start, p_end, gate_start, gate_end)
@@ -964,6 +932,7 @@ def compute_gate_crossings(tracks, waypoint_gates):
                 crossing_time = time_values[sample_index] + fraction * (
                     time_values[sample_index + 1] - time_values[sample_index]
                 )
+                # Move forward so later gates cannot match earlier segments.
                 start_index = sample_index + 1
                 break
 
@@ -988,6 +957,7 @@ def trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finis
         if finish_time < start_time:
             raise ValueError(f"Finish precedes start for boat {track.get('name', 'Unknown')}.")
 
+        # Trim all per-sample arrays to the shared race window.
         time_values = track["t"]
         latitude = track["lat"]
         longitude = track["lon"]
@@ -1016,6 +986,7 @@ def compute_waypoint_progress_from_gates(average_route, waypoint_gates):
     if not np.isfinite(total_distance) or total_distance <= 0:
         raise ValueError("Rhumb line distance is invalid for waypoint projection.")
 
+    # Gate projection uses line intersections with the rhumb line segments.
     progress_values = []
     waypoint_names = []
     for gate in waypoint_gates:
@@ -1048,6 +1019,7 @@ def find_start_finish_gate_positions(waypoint_gates):
     """Return indices for start and finish gates in the gate list."""
     start_pos = None
     finish_pos = None
+    # Gate names are treated as canonical; they must be labeled explicitly.
     for idx, gate in enumerate(waypoint_gates):
         name = str(gate.get("name", "")).strip().lower()
         if name == "start":
@@ -1063,6 +1035,7 @@ def cumulative_distance_meters(latitude, longitude):
     """Cumulative great-circle distance along a polyline."""
     if len(latitude) < 2:
         return np.array([0.0])
+    # Convert per-segment distances into a running total.
     segment = haversine_meters(latitude[:-1], longitude[:-1], latitude[1:], longitude[1:])
     segment = np.where(np.isfinite(segment), segment, 0.0)
     return np.concatenate([[0.0], np.cumsum(segment)])
@@ -1078,8 +1051,10 @@ def geojson_geometry_to_lines(geometry):
         if line.size:
             line_strings.append(line)
     elif geometry_type == "MultiLineString":
+        # Multi-line geometries are expanded into separate line segments.
         line_strings.extend(coords_to_cell_of_2d(coords))
     elif geometry_type == "GeometryCollection":
+        # Recursively gather all line-like geometries.
         for geom in geometry.get("geometries", []):
             line_strings.extend(geojson_geometry_to_lines(geom))
     return line_strings
@@ -1090,6 +1065,7 @@ def coords_to_numeric_2d(coords):
     if coords is None:
         return np.array([])
     if isinstance(coords, list):
+        # Ignore any trailing altitude dimension.
         arr = np.array(coords, dtype=float)
         if arr.ndim == 2 and arr.shape[1] >= 2:
             return arr[:, :2]
@@ -1103,6 +1079,7 @@ def coords_to_cell_of_2d(coords):
         return lines
     if isinstance(coords, list):
         for part in coords:
+            # Each part becomes its own line array.
             line = coords_to_numeric_2d(part)
             if line.size:
                 lines.append(line)
