@@ -10,6 +10,13 @@ documentation/main.log
 documentation/main.out
 documentation/main.pdf
 documentation/main.synctex.gz
+documentation/*.aux
+documentation/*.fdb_latexmk
+documentation/*.fls
+documentation/*.log
+documentation/*.out
+documentation/*.synctex.gz
+documentation/main*.pdf
 finish.csv
 main.aux
 main.fdb_latexmk

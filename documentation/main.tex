@@ -1,7 +1,53 @@
-\documentclass[11pt]{article}
-\usepackage[a4paper,margin=2.5cm]{geometry}
+﻿\documentclass[11pt]{article}
+\newif\ifphonepdf
+\ifdefined\phonepdftrueoverride
+  \phonepdftrue
+\else
+  \phonepdffalse
+\fi
+\newif\ifspeedplots
+\ifdefined\speedplotsfalseoverride
+  \speedplotsfalse
+\else
+  \speedplotstrue
+\fi
+\newcommand{\figurevariant}{desktop}
+\newcommand{\sectionbreak}{\clearpage}
+
+\ifphonepdf
+  % Phone-friendly: narrow page with normal page height for robust mobile rendering.
+  % Very tall single-page PDFs can be truncated or partially rendered by viewers.
+  \usepackage[
+    paperwidth=108mm,
+    paperheight=220mm,
+    left=4mm,
+    right=4mm,
+    top=1.5mm,
+    bottom=1.5mm
+  ]{geometry}
+  \pagestyle{empty}
+  \raggedbottom
+  \renewcommand{\sectionbreak}{}
+  \renewcommand{\figurevariant}{phone}
+\else
+  \usepackage[a4paper,margin=2.5cm]{geometry}
+\fi
 \usepackage{graphicx}
+\ifphonepdf
+  % Phone embed guard band: keep a small horizontal margin to avoid edge clipping
+  % in PDF viewers while preserving per-figure aspect ratios.
+  \setkeys{Gin}{pagebox=mediabox,width=0.98\linewidth}
+\else
+  \setkeys{Gin}{pagebox=mediabox}
+\fi
 \usepackage{hyperref}
+\ifphonepdf
+  % Hint PDF viewers to open in a vertical continuous layout.
+  \hypersetup{
+    pdfpagelayout=OneColumn,
+    pdfstartview=FitH
+  }
+\fi
 \usepackage{float}
 \title{Silverrudder 2025 Regatta Summary}
 \author{}
@@ -9,11 +55,15 @@
 \begin{document}
 \maketitle
 \section*{Overview}
+\ifspeedplots
 This document summarizes pace deltas (minutes per NM) and speed deltas ($\mathrm{kn}$) by leg.
+\else
+This document summarizes pace deltas (minutes per NM) by leg.
+\fi
 \paragraph{Purpose.}
 The purpose of this report is to give skippers a practical tool for evaluating and analyzing their performance in Silverrudder 2025. By comparing each boat to a common baseline at the same \emph{place} on the course (progress along the rhumb line), the plots highlight where time was gained or lost on each leg and where performance was stable versus inconsistent.
 \paragraph{How to read.}
-Each leg figure shows, for every boat, the distribution of per-sample \emph{pace delta} relative to the fleet mean pace at the same \emph{progress} along the rhumb line (average route). Negative values mean a boat was faster than the baseline (lower minutes per NM), while positive values mean slower. The box spans the interquartile range (25--75\%), the horizontal line is the median, and the dot is the mean; whiskers show the full min/max observed within that leg. Each leg section includes both pace and speed delta plots; the box plot anatomy is the same, but speed deltas are reported in knots.
+Each leg figure shows, for every boat, the distribution of per-sample \emph{pace delta} relative to the fleet mean pace at the same \emph{progress} along the rhumb line (average route). Negative values mean a boat was faster than the baseline (lower minutes per NM), while positive values mean slower. The box spans the interquartile range (25--75\%), the horizontal line is the median, and the dot is the mean; whiskers show the full min/max observed within that leg. \ifspeedplots Each leg section includes both pace and speed delta plots; the box plot anatomy is the same, but speed deltas are reported in knots.\fi
 \paragraph{Definitions (speed, pace, and mean pace).}
 The input data contains a \emph{speed} sample for each GPS record (after unit conversion to knots, $\mathrm{kn}$).
 \emph{Pace} is the inverse representation: minutes per nautical mile. For each sample,
@@ -34,12 +84,14 @@ For each boat sample, the plotted value is
 \Delta \mathrm{pace} = \mathrm{pace}_{\mathrm{boat}} - \mathrm{pace}_{\mathrm{mean}}(\mathrm{progress}).
 \]
 Negative $\Delta\mathrm{pace}$ means faster-than-baseline at that point on the course (lower minutes per NM), while positive means slower-than-baseline.
+\ifspeedplots
 \paragraph{Speed delta.}
 For each boat sample, the plotted value is
 \[
 \Delta \mathrm{Speed} = \mathrm{Speed}_{\mathrm{boat}} - \mathrm{Speed}_{\mathrm{mean}}(\mathrm{progress}).
 \]
 Positive $\Delta\mathrm{Speed}$ means faster-than-baseline at that point on the course (higher $\mathrm{kn}$), while negative means slower-than-baseline.
+\fi
 \paragraph{High-level observations.}
 Use the plot shapes as direct diagnostics:
 \begin{itemize}
@@ -47,317 +99,371 @@ Use the plot shapes as direct diagnostics:
 \item \textbf{Consistency:} a short box (small IQR) means the boat stayed close to a single pace delta through the leg; a tall box means the pace delta moved around a lot within the leg.
 \item \textbf{Time leaks:} a long upper whisker (large positive deltas) means the boat had patches where it was dramatically slower than the baseline at specific locations; those patches dominate time lost on that leg.
 \end{itemize}
-\clearpage
+\sectionbreak
 \section*{Leg 1: Start-Troense}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-01-start-troense.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-01-start-troense.pdf}
 \caption{Pace delta by boat for leg 1.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-01-start-troense.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-01-start-troense.pdf}
 \caption{Speed delta by boat for leg 1.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg contains a large start-phase effect. The wide spread is driven by late starters and congestion: when a boat is still stuck in the start pack (very low speed), its pace increases sharply and produces large positive $\Delta\mathrm{pace}$ outliers. Boats that clear the start line and traffic quickly produce distributions closer to $0$ (or below), while boats delayed in congestion show long positive tails that mostly represent start delay rather than steady sailing performance.
-\clearpage
+\sectionbreak
 \section*{Leg 2: Troense-Thuro Rev}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-02-troense-thuro-rev.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-02-troense-thuro-rev.pdf}
 \caption{Pace delta by boat for leg 2.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-02-troense-thuro-rev.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-02-troense-thuro-rev.pdf}
 \caption{Speed delta by boat for leg 2.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 Compared to leg 1, the distributions are tighter: many boats sit closer to $0$ and the boxes are shorter. Boats that remain clearly offset from $0$ through this leg are carrying a persistent advantage or disadvantage at the same places on the course (not a single isolated incident).
-\clearpage
+\sectionbreak
 \section*{Leg 3: Thuro Rev-Storebaeltsbroen}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
 \caption{Pace delta by boat for leg 3.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
 \caption{Speed delta by boat for leg 3.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This is a compression leg: many boats sit close to $0$ and the main differentiator is consistency. A narrow box means the boat stayed close to its typical pace delta through the leg; a long positive whisker means the boat had brief but very costly slowdowns at specific places.
-\clearpage
+\sectionbreak
 \section*{Leg 4: Storebaeltsbroen-Fynshoved}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
 \caption{Pace delta by boat for leg 4.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
 \caption{Speed delta by boat for leg 4.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 The slow side shows the important structure: when a boat's box lies mostly above $0$, the boat is slower than the baseline through most of the leg. When the upper whisker extends far above the box, the boat has a small number of locations where it loses a large amount of time per mile relative to the baseline.
-\clearpage
+\sectionbreak
 \section*{Leg 5: Fynshoved-Aebelo}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-05-fynshoved-aebelo.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-05-fynshoved-aebelo.pdf}
 \caption{Pace delta by boat for leg 5.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-05-fynshoved-aebelo.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-05-fynshoved-aebelo.pdf}
 \caption{Speed delta by boat for leg 5.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg shows clearer separation: boats spread further away from $0$ and the slow side shows larger spreads for some boats. When a boat has a high median \emph{and} a tall box, the boat is slower than baseline most of the time and also inconsistent within the leg; that combination produces large cumulative time loss.
-\clearpage
+\sectionbreak
 \section*{Leg 6: Aebelo-Strib Fyr}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-06-aebelo-strib-fyr.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-06-aebelo-strib-fyr.pdf}
 \caption{Pace delta by boat for leg 6.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-06-aebelo-strib-fyr.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-06-aebelo-strib-fyr.pdf}
 \caption{Speed delta by boat for leg 6.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg separates boats into a faster group (negative deltas) and a slower group (positive deltas). Within each group, compare spreads: two boats have similar medians, but the boat with the narrower box is the boat with fewer large deviations from its typical pace delta through the leg.
-\clearpage
+\sectionbreak
 \section*{Leg 7: Strib Fyr-Snaevringen}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-07-strib-fyr-snaevringen.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-07-strib-fyr-snaevringen.pdf}
 \caption{Pace delta by boat for leg 7.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-07-strib-fyr-snaevringen.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-07-strib-fyr-snaevringen.pdf}
 \caption{Speed delta by boat for leg 7.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg makes it easy to spot both speed and reliability. Boats with boxes centered below $0$ are faster-than-baseline; boats with boxes centered above $0$ are slower-than-baseline. A tight box with one long positive whisker points to a specific slow patch: most of the leg was fine, but one location produced a large time loss.
-\clearpage
+\sectionbreak
 \section*{Leg 8: Snaevringen-Bogo}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-08-snaevringen-bogo.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-08-snaevringen-bogo.pdf}
 \caption{Pace delta by boat for leg 8.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-08-snaevringen-bogo.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-08-snaevringen-bogo.pdf}
 \caption{Speed delta by boat for leg 8.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg shows the same two ingredients: offset from $0$ (faster or slower) and spread (stable or variable). Boats that combine a negative center and a narrow box are fast \emph{and} steady; boats that combine a positive center and a tall box are slow \emph{and} inconsistent.
-\clearpage
+\sectionbreak
 \section*{Leg 9: Bogo-Horneland}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-09-bogo-horneland.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-09-bogo-horneland.pdf}
 \caption{Pace delta by boat for leg 9.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-09-bogo-horneland.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-09-bogo-horneland.pdf}
 \caption{Speed delta by boat for leg 9.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 Look for boats with boxes centered far from $0$: those are persistent advantages or disadvantages at the same places on the course. Wide boxes here signal variable performance across the leg, while tight boxes point to steady execution.
-\clearpage
+\sectionbreak
 \section*{Leg 10: Horneland-Lehnskov}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-10-horneland-lehnskov.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-10-horneland-lehnskov.pdf}
 \caption{Pace delta by boat for leg 10.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-10-horneland-lehnskov.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-10-horneland-lehnskov.pdf}
 \caption{Speed delta by boat for leg 10.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This leg rewards consistency: the median shows overall offset from the baseline, while long whiskers flag isolated slowdowns that can dominate time lost.
-\clearpage
+\sectionbreak
 \section*{Leg 11: Lehnskov-Finish}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-leg-11-lehnskov-finish.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-leg-11-lehnskov-finish.pdf}
 \caption{Pace delta by boat for leg 11.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-leg-11-lehnskov-finish.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-leg-11-lehnskov-finish.pdf}
 \caption{Speed delta by boat for leg 11.}
 \end{figure}
+\fi
 \paragraph{What stands out.}
 This closing leg contains the largest slow outliers in the set of plots: some boats have long positive tails. Those tails correspond to locations where the boat spent substantial time at low speed, which drives pace upward (minutes per mile). Boats with a strong slow tail in this leg have a small set of places that dominate their total time loss on the run back to Finish.
-\clearpage
+\sectionbreak
+\ifspeedplots
 \section*{Boat summaries (pace and speed)}
+\else
+\section*{Boat summaries (pace)}
+\fi
 % Maintained manually; scripts export figures only.
-\clearpage
+\sectionbreak
 \subsection*{Boat: Saga}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-saga.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-saga.pdf}
 \caption{Pace delta by leg for Saga.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-saga.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-saga.pdf}
 \caption{Speed delta by leg for Saga.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Sweet Escape}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-sweet-escape.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-sweet-escape.pdf}
 \caption{Pace delta by leg for Sweet Escape.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-sweet-escape.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-sweet-escape.pdf}
 \caption{Speed delta by leg for Sweet Escape.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Mercutio}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-mercutio.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-mercutio.pdf}
 \caption{Pace delta by leg for Mercutio.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-mercutio.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-mercutio.pdf}
 \caption{Speed delta by leg for Mercutio.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Gladys}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-gladys.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-gladys.pdf}
 \caption{Pace delta by leg for Gladys.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-gladys.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-gladys.pdf}
 \caption{Speed delta by leg for Gladys.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Aegir 2.0}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-aegir-2-0.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-aegir-2-0.pdf}
 \caption{Pace delta by leg for Aegir 2.0.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-aegir-2-0.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-aegir-2-0.pdf}
 \caption{Speed delta by leg for Aegir 2.0.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Nordri}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-nordri.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-nordri.pdf}
 \caption{Pace delta by leg for Nordri.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-nordri.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-nordri.pdf}
 \caption{Speed delta by leg for Nordri.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Vera}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-vera.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-vera.pdf}
 \caption{Pace delta by leg for Vera.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-vera.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-vera.pdf}
 \caption{Speed delta by leg for Vera.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Moana}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-moana.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-moana.pdf}
 \caption{Pace delta by leg for Moana.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-moana.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-moana.pdf}
 \caption{Speed delta by leg for Moana.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: My}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-my.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-my.pdf}
 \caption{Pace delta by leg for My.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-my.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-my.pdf}
 \caption{Speed delta by leg for My.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Julia}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-julia.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-julia.pdf}
 \caption{Pace delta by leg for Julia.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-julia.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-julia.pdf}
 \caption{Speed delta by leg for Julia.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Lets Sea}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-lets-sea.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-lets-sea.pdf}
 \caption{Pace delta by leg for Lets Sea.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-lets-sea.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-lets-sea.pdf}
 \caption{Speed delta by leg for Lets Sea.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Chaya}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-chaya.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-chaya.pdf}
 \caption{Pace delta by leg for Chaya.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-chaya.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-chaya.pdf}
 \caption{Speed delta by leg for Chaya.}
 \end{figure}
-\clearpage
+\fi
+\sectionbreak
 \subsection*{Boat: Samba}
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/pace-delta-boat-samba.pdf}
+\includegraphics{figures/\figurevariant/pace-delta-boat-samba.pdf}
 \caption{Pace delta by leg for Samba.}
 \end{figure}
+\ifspeedplots
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{figures/speed-delta-boat-samba.pdf}
+\includegraphics{figures/\figurevariant/speed-delta-boat-samba.pdf}
 \caption{Speed delta by leg for Samba.}
 \end{figure}
+\fi
 \end{document}
+
+

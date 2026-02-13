@@ -1,6 +1,7 @@
-﻿import json
+import argparse
+import json
 from dataclasses import dataclass, replace
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +28,139 @@ BOX_PLOT_STYLE_PACE = BOX_PLOT_STYLE_COMMON
 BOX_PLOT_AXIS_STYLE_PACE = replace(BOX_PLOT_AXIS_STYLE_COMMON, major_tick=2.0)
 BOX_PLOT_WHISKER_SCALE = 1.5
 
+
+@dataclass(frozen=True)
+class FigureProfile:
+    """Profile-specific export settings for figure layout and typography."""
+
+    name: str
+    output_subdir: str
+    rc_params: Dict[str, object]
+    waypoint_label_fontsize: float
+    scalar_marker_size: float
+    pace_units_per_inch_factor: float
+    speed_units_per_inch_factor: float
+    boxplot_top_margin_in: float
+    boxplot_bottom_margin_in: float
+    boxplot_left_margin_in: float
+    boxplot_right_margin_in: float
+
+
+FIGURE_PROFILES = {
+    "desktop": FigureProfile(
+        name="desktop",
+        output_subdir="desktop",
+        rc_params={
+            # Match LaTeX text width on A4 with 25 mm margins: 160 mm.
+            "figure.figsize": (160.0 / 25.4, 5.2),
+            "font.size": 11.0,
+            "axes.titlesize": 11.0,
+            "axes.labelsize": 11.0,
+            "xtick.labelsize": 11.0,
+            "ytick.labelsize": 11.0,
+            "legend.fontsize": 11.0,
+        },
+        waypoint_label_fontsize=9.0,
+        scalar_marker_size=6.0,
+        pace_units_per_inch_factor=1.10,
+        speed_units_per_inch_factor=0.95,
+        boxplot_top_margin_in=0.30,
+        boxplot_bottom_margin_in=0.95,
+        boxplot_left_margin_in=0.75,
+        boxplot_right_margin_in=0.20,
+    ),
+    "phone": FigureProfile(
+        name="phone",
+        output_subdir="phone",
+        rc_params={
+            # Match LaTeX text width on phone layout: 108 mm paper with 4 mm margins => 100 mm.
+            "figure.figsize": (100.0 / 25.4, 5.2),
+            "font.size": 11.0,
+            "axes.titlesize": 11.0,
+            "axes.labelsize": 11.0,
+            "xtick.labelsize": 11.0,
+            "ytick.labelsize": 11.0,
+            "legend.fontsize": 11.0,
+        },
+        waypoint_label_fontsize=11.0,
+        scalar_marker_size=8.0,
+        pace_units_per_inch_factor=1.00,
+        speed_units_per_inch_factor=1.00,
+        boxplot_top_margin_in=0.30,
+        boxplot_bottom_margin_in=0.95,
+        boxplot_left_margin_in=0.60,
+        boxplot_right_margin_in=0.15,
+    ),
+}
+ACTIVE_FIGURE_PROFILE = FIGURE_PROFILES["desktop"]
+
+
+def parse_cli_args():
+    """Parse command-line options for figure export profiles."""
+    parser = argparse.ArgumentParser(
+        description="Generate Silverrudder analysis figures."
+    )
+    parser.add_argument(
+        "--figure-profile",
+        choices=("desktop", "phone", "both"),
+        default="both",
+        help="Figure style/export target to generate.",
+    )
+    parser.add_argument(
+        "--figure-root",
+        default=str(Path("documentation") / "figures"),
+        help="Root output folder for exported figures.",
+    )
+    return parser.parse_args()
+
+
+def resolve_figure_profiles(profile_name):
+    """Return ordered figure profiles to export."""
+    if profile_name == "both":
+        return [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
+    return [FIGURE_PROFILES[profile_name]]
+
+
+def set_active_figure_profile(profile):
+    """Set active profile used by plot helpers for marker/text sizing."""
+    global ACTIVE_FIGURE_PROFILE
+    ACTIVE_FIGURE_PROFILE = profile
+
+
+def prepare_figure(fig, export_and_close=False):
+    """Keep interactive maximize behavior without overriding export sizing."""
+    if not export_and_close:
+        sh.maximize_figure(fig)
+
+
+def save_figure(fig, output_path):
+    """Save figure without external scaling; keep canvas size as the source of truth."""
+    fig.savefig(output_path)
+
+
+def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.0):
+    """Set figure size so y-axis data spacing is consistent in physical units."""
+    fig_width = fig.get_size_inches()[0]
+    data_height_in = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
+    top_in = ACTIVE_FIGURE_PROFILE.boxplot_top_margin_in
+    bottom_in = ACTIVE_FIGURE_PROFILE.boxplot_bottom_margin_in + max(0.0, extra_bottom_in)
+    left_in = ACTIVE_FIGURE_PROFILE.boxplot_left_margin_in
+    right_in = ACTIVE_FIGURE_PROFILE.boxplot_right_margin_in
+
+    # Figure height is data-height plus fixed non-data margins.
+    fig_height = data_height_in + top_in + bottom_in
+    fig.set_size_inches(fig_width, fig_height, forward=True)
+
+    left = left_in / fig_width
+    right = 1.0 - (right_in / fig_width)
+    bottom = bottom_in / fig_height
+    top = 1.0 - (top_in / fig_height)
+    fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+
+
 def main():
+    args = parse_cli_args()
+
     # End-to-end pipeline: load metadata and tracks, align samples to a reference route,
     # compute per-window baseline stats, then prepare plot-ready data for the chosen outputs.
     data_root = Path("data") / "silverrudder_2025"
@@ -85,8 +218,7 @@ def main():
 
     # When enabled, figures are saved to PDF and immediately closed to limit memory use.
     export_and_close_figures = True
-    export_pdf_dir = Path("documentation") / "figures"
-    export_dir = export_pdf_dir if export_and_close_figures else None
+    figure_output_root = Path(args.figure_root)
     # Disable interactive display when exporting so figures do not pop up during batch runs.
     if export_and_close_figures:
         plt.ioff()
@@ -98,17 +230,6 @@ def main():
     show_speed_box_plots = True
     show_speed_box_plots_by_boat = True
     show_pace_range_plot = False
-
-    if show_map_plot:
-        plot_colored_tracks(
-            tracks,
-            average_route,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            export_path=(export_dir / "map.pdf") if export_and_close_figures else None,
-            export_and_close=export_and_close_figures,
-        )
 
     # Precompute pace deltas once when either pace plot is enabled.
     pace_box_plot_data = None
@@ -136,47 +257,67 @@ def main():
             first_leg_gate_pos,
         )
 
-    if show_pace_box_plots:
-        plot_pace_delta_box_plot(
-            tracks,
-            pace_box_plot_data,
-            export_dir=export_dir,
-            export_and_close=export_and_close_figures,
+    figure_profiles = resolve_figure_profiles(args.figure_profile)
+    for figure_profile in figure_profiles:
+        set_active_figure_profile(figure_profile)
+        export_dir = (
+            figure_output_root / figure_profile.output_subdir
+            if export_and_close_figures
+            else None
         )
+        with matplotlib.rc_context(figure_profile.rc_params):
+            if show_map_plot:
+                plot_colored_tracks(
+                    tracks,
+                    average_route,
+                    speed_window_stats,
+                    way_point_progress,
+                    way_point_names,
+                    export_path=(export_dir / "map.pdf") if export_and_close_figures else None,
+                    export_and_close=export_and_close_figures,
+                )
 
-    if show_pace_box_plots_by_boat:
-        plot_pace_delta_box_plot_by_boat(
-            tracks,
-            pace_box_plot_data,
-            export_dir=export_dir,
-            export_and_close=export_and_close_figures,
-        )
+            if show_pace_box_plots:
+                plot_pace_delta_box_plot(
+                    tracks,
+                    pace_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
 
-    if show_speed_box_plots:
-        plot_speed_delta_box_plot(
-            tracks,
-            speed_box_plot_data,
-            export_dir=export_dir,
-            export_and_close=export_and_close_figures,
-        )
+            if show_pace_box_plots_by_boat:
+                plot_pace_delta_box_plot_by_boat(
+                    tracks,
+                    pace_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
 
-    if show_speed_box_plots_by_boat:
-        plot_speed_delta_box_plot_by_boat(
-            tracks,
-            speed_box_plot_data,
-            export_dir=export_dir,
-            export_and_close=export_and_close_figures,
-        )
+            if show_speed_box_plots:
+                plot_speed_delta_box_plot(
+                    tracks,
+                    speed_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
 
-    if show_pace_range_plot:
-        plot_speed_range_along_route(
-            tracks,
-            speed_window_stats,
-            way_point_progress,
-            way_point_names,
-            export_path=(export_dir / "pace-range-along-route.pdf") if export_and_close_figures else None,
-            export_and_close=export_and_close_figures,
-        )
+            if show_speed_box_plots_by_boat:
+                plot_speed_delta_box_plot_by_boat(
+                    tracks,
+                    speed_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
+
+            if show_pace_range_plot:
+                plot_speed_range_along_route(
+                    tracks,
+                    speed_window_stats,
+                    way_point_progress,
+                    way_point_names,
+                    export_path=(export_dir / "pace-range-along-route.pdf") if export_and_close_figures else None,
+                    export_and_close=export_and_close_figures,
+                )
 
     # Only display figures interactively when we are not in export-and-close mode.
     if not export_and_close_figures:
@@ -265,7 +406,7 @@ def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names
             (average_route["lon"][point_index], average_route["lat"][point_index]),
             textcoords="offset points",
             xytext=(6, 6),
-            fontsize=9,
+            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
             color="black",
             zorder=6,
         )
@@ -374,6 +515,68 @@ def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg
     if not np.isfinite(local_lower) or not np.isfinite(local_upper):
         return None
     return local_lower, local_upper
+
+
+def compute_leg_whisker_range_across_tracks(
+    track_progress_by_track,
+    delta_by_track,
+    progress_values,
+    leg_index,
+    first_leg_delta_by_track,
+):
+    """Return whisker bounds for one leg aggregated across all tracks."""
+    local_lower = np.inf
+    local_upper = -np.inf
+    for track_index, (progress, delta_values) in enumerate(
+        zip(track_progress_by_track, delta_by_track)
+    ):
+        first_leg_value = first_leg_delta_by_track[track_index]
+        leg_samples = get_leg_samples_for_track(
+            progress, delta_values, progress_values, leg_index, first_leg_value
+        )
+        if leg_samples is None:
+            continue
+        local_lower, local_upper = box_plots.update_whisker_range(
+            local_lower,
+            local_upper,
+            leg_samples,
+            whisker_scale=BOX_PLOT_WHISKER_SCALE,
+        )
+    if not np.isfinite(local_lower) or not np.isfinite(local_upper):
+        return None
+    return local_lower, local_upper
+
+
+def compute_metric_scale_context(
+    track_progress_by_track,
+    delta_by_track,
+    progress_values,
+    first_leg_delta_by_track,
+    units_per_inch_factor=1.0,
+):
+    """Return global y-range and units-per-inch for one metric (speed or pace)."""
+    global_lower = float("inf")
+    global_upper = float("-inf")
+    for track_index, (progress, delta_values) in enumerate(
+        zip(track_progress_by_track, delta_by_track)
+    ):
+        if progress.size == 0:
+            continue
+        leg_range = compute_leg_whisker_range(
+            progress, delta_values, progress_values, first_leg_delta_by_track[track_index]
+        )
+        if leg_range is None:
+            continue
+        global_lower = min(global_lower, leg_range[0])
+        global_upper = max(global_upper, leg_range[1])
+
+    global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
+    if global_range_result is None:
+        return None
+    global_lower, global_upper, global_range = global_range_result
+    units_per_inch = box_plots.compute_units_per_inch(global_range)
+    units_per_inch *= units_per_inch_factor
+    return global_lower, global_upper, global_range, units_per_inch
 
 
 def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
@@ -530,7 +733,7 @@ def plot_colored_tracks(
     previous_usetex = matplotlib.rcParams.get("text.usetex", False)
     matplotlib.rcParams["text.usetex"] = False
     fig, ax = plt.subplots()
-    sh.maximize_figure(fig)
+    prepare_figure(fig, export_and_close=export_and_close)
     ax.grid(True)
     # Preserve metric proportions so the route geometry is not visually distorted.
     sh.apply_local_meter_aspect(ax, average_route)
@@ -568,7 +771,7 @@ def plot_colored_tracks(
     if export_path is not None:
         export_path = Path(export_path)
         export_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(export_path, bbox_inches="tight")
+        save_figure(fig, export_path)
     if export_and_close:
         plt.close(fig)
     matplotlib.rcParams["text.usetex"] = previous_usetex
@@ -644,11 +847,36 @@ def plot_speed_delta_box_plot(
 
     # Iterate each leg separately to produce a dedicated figure per leg.
     leg_count = len(progress_values) - 1
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        speed_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.speed_units_per_inch_factor,
+    )
+    if scale_context is None:
+        return
+    global_lower, global_upper, global_range, units_per_inch = scale_context
 
     for leg_index in range(leg_count - 1, -1, -1):
+        leg_range = compute_leg_whisker_range_across_tracks(
+            track_progress_by_track,
+            speed_delta_by_track,
+            progress_values,
+            leg_index,
+            first_leg_delta_by_track,
+        )
+        if leg_range is None:
+            leg_range = (global_lower, global_upper)
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            leg_range[0], leg_range[1], global_range
+        )
+
         fig, ax = plt.subplots()
-        sh.maximize_figure(fig)
+        prepare_figure(fig, export_and_close=export_and_close)
+        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.15)
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
+        ax.set_ylim(local_lower, local_upper)
 
         # Order boats by mean delta so the ranking is visually consistent.
         leg_ordered = build_leg_ordered(
@@ -664,7 +892,7 @@ def plot_speed_delta_box_plot(
                 export_dir.mkdir(parents=True, exist_ok=True)
                 safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
                 output_path = export_dir / f"speed-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
-                fig.savefig(output_path, bbox_inches="tight")
+                save_figure(fig, output_path)
             if export_and_close:
                 plt.close(fig)
             continue
@@ -679,7 +907,7 @@ def plot_speed_delta_box_plot(
                     plot_index,
                     speed_leg,
                     marker="o",
-                    markersize=6,
+                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
                     color=line_color,
                     linestyle="None",
                 )
@@ -702,13 +930,14 @@ def plot_speed_delta_box_plot(
         )
         ax.set_xlim(0.5, len(leg_ordered) + 0.5)
         ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
+        ax.set_ylim(local_lower, local_upper)
         ax.set_title(leg_labels[leg_index])
         if export_dir is not None:
             # Export per-leg figures with a stable name for reports.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
             output_path = export_dir / f"speed-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
-            fig.savefig(output_path, bbox_inches="tight")
+            save_figure(fig, output_path)
         if export_and_close:
             plt.close(fig)
 
@@ -729,29 +958,18 @@ def plot_speed_delta_box_plot_by_boat(
     leg_labels = speed_plot_data.leg_labels
     first_leg_delta_by_track = speed_plot_data.first_leg_delta_by_track
 
-    # Compute global whisker range first so each boat plot shares a comparable y-scale.
+    # Compute one metric-wide scale context so per-boat and per-leg plots are physically comparable.
     leg_count = len(progress_values) - 1
-
-    global_lower = float("inf")
-    global_upper = float("-inf")
-    for track_index, (progress, speed_delta) in enumerate(
-        zip(track_progress_by_track, speed_delta_by_track)
-    ):
-        if progress.size == 0:
-            continue
-        leg_range = compute_leg_whisker_range(
-            progress, speed_delta, progress_values, first_leg_delta_by_track[track_index]
-        )
-        if leg_range is None:
-            continue
-        global_lower = min(global_lower, leg_range[0])
-        global_upper = max(global_upper, leg_range[1])
-
-    global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
-    if global_range_result is None:
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        speed_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.speed_units_per_inch_factor,
+    )
+    if scale_context is None:
         return
-    global_lower, global_upper, global_range = global_range_result
-    units_per_inch = box_plots.compute_units_per_inch(global_range)
+    _, _, global_range, units_per_inch = scale_context
 
     # Each boat gets its own figure with a locally adjusted y-range.
     for track_index, track in enumerate(tracks):
@@ -770,9 +988,20 @@ def plot_speed_delta_box_plot_by_boat(
         )
 
         fig, ax = plt.subplots()
-        sh.maximize_figure(fig)
+        prepare_figure(fig, export_and_close=export_and_close)
+        # Keep a modest guard band for long rotated leg labels.
+        boat_tick_extra_bottom_in = 0.40
+        boat_tick_edge_padding = 0.70
+        if ACTIVE_FIGURE_PROFILE.name == "phone":
+            boat_tick_extra_bottom_in = 0.75
+            boat_tick_edge_padding = 0.85
         # Resize vertically so value ranges occupy a comparable physical height.
-        box_plots.resize_figure_for_range(fig, units_per_inch, local_range)
+        apply_boxplot_physical_layout(
+            fig,
+            local_range,
+            units_per_inch,
+            extra_bottom_in=boat_tick_extra_bottom_in,
+        )
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
@@ -792,7 +1021,7 @@ def plot_speed_delta_box_plot_by_boat(
                     leg_index + 1,
                     speed_leg,
                     marker="o",
-                    markersize=6,
+                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
                     color=line_color,
                     linestyle="None",
                 )
@@ -808,8 +1037,14 @@ def plot_speed_delta_box_plot_by_boat(
                 )
 
         ax.set_xticks(range(1, leg_count + 1))
-        ax.set_xticklabels(leg_labels, rotation=45, ha="right")
-        ax.set_xlim(0.5, leg_count + 0.5)
+        ax.set_xticklabels(
+            leg_labels,
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
+        )
+        ax.set_xlim(1.0 - boat_tick_edge_padding, leg_count + boat_tick_edge_padding)
         ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
         ax.set_ylim(local_lower, local_upper)
         ax.set_title(track.get("name", "Boat"))
@@ -819,7 +1054,7 @@ def plot_speed_delta_box_plot_by_boat(
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_name = sh.sanitize_filename_label(track.get("name", f"boat-{track_index + 1}"))
             output_path = export_dir / f"speed-delta-boat-{safe_name}.pdf"
-            fig.savefig(output_path, bbox_inches="tight")
+            save_figure(fig, output_path)
         if export_and_close:
             plt.close(fig)
 
@@ -1116,11 +1351,36 @@ def plot_pace_delta_box_plot(
 
     # Generate one figure per leg for easier inspection.
     leg_count = len(progress_values) - 1
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        pace_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.pace_units_per_inch_factor,
+    )
+    if scale_context is None:
+        return
+    global_lower, global_upper, global_range, units_per_inch = scale_context
 
     for leg_index in range(leg_count - 1, -1, -1):
+        leg_range = compute_leg_whisker_range_across_tracks(
+            track_progress_by_track,
+            pace_delta_by_track,
+            progress_values,
+            leg_index,
+            first_leg_delta_by_track,
+        )
+        if leg_range is None:
+            leg_range = (global_lower, global_upper)
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            leg_range[0], leg_range[1], global_range
+        )
+
         fig, ax = plt.subplots()
-        sh.maximize_figure(fig)
+        prepare_figure(fig, export_and_close=export_and_close)
+        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.15)
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
+        ax.set_ylim(local_lower, local_upper)
 
         # Order boats by mean pace delta to emphasize relative ranking.
         leg_ordered = build_leg_ordered(
@@ -1136,7 +1396,7 @@ def plot_pace_delta_box_plot(
                 export_dir.mkdir(parents=True, exist_ok=True)
                 safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
                 output_path = export_dir / f"pace-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
-                fig.savefig(output_path, bbox_inches="tight")
+                save_figure(fig, output_path)
             if export_and_close:
                 plt.close(fig)
             continue
@@ -1150,7 +1410,7 @@ def plot_pace_delta_box_plot(
                     plot_index,
                     pace_leg,
                     marker="o",
-                    markersize=6,
+                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
                     color=line_color,
                     linestyle="None",
                 )
@@ -1173,13 +1433,14 @@ def plot_pace_delta_box_plot(
         )
         ax.set_xlim(0.5, len(leg_ordered) + 0.5)
         ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
+        ax.set_ylim(local_lower, local_upper)
         ax.set_title(leg_labels[leg_index])
         if export_dir is not None:
             # Export per-leg figures for report inclusion.
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_label = sh.sanitize_filename_label(leg_labels[leg_index])
             output_path = export_dir / f"pace-delta-leg-{leg_index + 1:02d}-{safe_label}.pdf"
-            fig.savefig(output_path, bbox_inches="tight")
+            save_figure(fig, output_path)
         if export_and_close:
             plt.close(fig)
 
@@ -1200,29 +1461,18 @@ def plot_pace_delta_box_plot_by_boat(
     leg_labels = pace_plot_data.leg_labels
     first_leg_delta_by_track = pace_plot_data.first_leg_delta_by_track
 
-    # Compute a shared y-scale so boat plots are comparable.
+    # Compute one metric-wide scale context so per-boat and per-leg plots are physically comparable.
     leg_count = len(progress_values) - 1
-
-    global_lower = float("inf")
-    global_upper = float("-inf")
-    for track_index, (progress, pace_delta) in enumerate(
-        zip(track_progress_by_track, pace_delta_by_track)
-    ):
-        if progress.size == 0:
-            continue
-        leg_range = compute_leg_whisker_range(
-            progress, pace_delta, progress_values, first_leg_delta_by_track[track_index]
-        )
-        if leg_range is None:
-            continue
-        global_lower = min(global_lower, leg_range[0])
-        global_upper = max(global_upper, leg_range[1])
-
-    global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
-    if global_range_result is None:
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        pace_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.pace_units_per_inch_factor,
+    )
+    if scale_context is None:
         return
-    global_lower, global_upper, global_range = global_range_result
-    units_per_inch = box_plots.compute_units_per_inch(global_range)
+    _, _, global_range, units_per_inch = scale_context
 
     for track_index, track in enumerate(tracks):
         progress = track_progress_by_track[track_index]
@@ -1240,9 +1490,20 @@ def plot_pace_delta_box_plot_by_boat(
         )
 
         fig, ax = plt.subplots()
-        sh.maximize_figure(fig)
+        prepare_figure(fig, export_and_close=export_and_close)
+        # Keep a modest guard band for long rotated leg labels.
+        boat_tick_extra_bottom_in = 0.40
+        boat_tick_edge_padding = 0.70
+        if ACTIVE_FIGURE_PROFILE.name == "phone":
+            boat_tick_extra_bottom_in = 0.75
+            boat_tick_edge_padding = 0.85
         # Maintain a consistent data-to-physical-height ratio across boats.
-        box_plots.resize_figure_for_range(fig, units_per_inch, local_range)
+        apply_boxplot_physical_layout(
+            fig,
+            local_range,
+            units_per_inch,
+            extra_bottom_in=boat_tick_extra_bottom_in,
+        )
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
 
         line_color = track.get("color") or (0.3, 0.3, 0.3)
@@ -1262,7 +1523,7 @@ def plot_pace_delta_box_plot_by_boat(
                     leg_index + 1,
                     pace_leg,
                     marker="o",
-                    markersize=6,
+                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
                     color=line_color,
                     linestyle="None",
                 )
@@ -1278,8 +1539,14 @@ def plot_pace_delta_box_plot_by_boat(
                 )
 
         ax.set_xticks(range(1, leg_count + 1))
-        ax.set_xticklabels(leg_labels, rotation=45, ha="right")
-        ax.set_xlim(0.5, leg_count + 0.5)
+        ax.set_xticklabels(
+            leg_labels,
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
+        )
+        ax.set_xlim(1.0 - boat_tick_edge_padding, leg_count + boat_tick_edge_padding)
         ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
         ax.set_ylim(local_lower, local_upper)
         ax.set_title(track.get("name", "Boat"))
@@ -1289,7 +1556,7 @@ def plot_pace_delta_box_plot_by_boat(
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_name = sh.sanitize_filename_label(track.get("name", f"boat-{track_index + 1}"))
             output_path = export_dir / f"pace-delta-boat-{safe_name}.pdf"
-            fig.savefig(output_path, bbox_inches="tight")
+            save_figure(fig, output_path)
         if export_and_close:
             plt.close(fig)
 
@@ -1321,7 +1588,7 @@ def plot_speed_range_along_route(
         window_progress = (window_center - 1) / (route_sample_count - 1)
 
     fig, ax = plt.subplots()
-    sh.maximize_figure(fig)
+    prepare_figure(fig, export_and_close=export_and_close)
     ax.grid(True)
 
     default_color = plt.cm.hsv(np.linspace(0, 1, max(len(tracks), 1)))
@@ -1349,7 +1616,7 @@ def plot_speed_range_along_route(
     if export_path is not None:
         export_path = Path(export_path)
         export_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(export_path, bbox_inches="tight")
+        save_figure(fig, export_path)
     if export_and_close:
         plt.close(fig)
 
