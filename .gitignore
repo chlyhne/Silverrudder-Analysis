@@ -26,3 +26,6 @@ main.out
 ne_10m_coastline.geojson
 silver.asv
 silver.m
+quarto/_build/
+quarto/_output/
+quarto/.quarto/

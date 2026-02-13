@@ -557,11 +557,12 @@ def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, 
     return leg_ordered
 
 
-def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg_value):
+def compute_track_robust_delta_range(progress, delta_values, progress_values, first_leg_value):
     """
-    Compute a single track's whisker min/max across all legs.
+    Compute a single track's robust min/max delta range across all legs.
 
-    Used to derive stable y-axis bounds for "by boat" figures.
+    "Robust" here means Tukey-style whisker bounds via `update_whisker_range`,
+    which are less sensitive to extreme outliers than raw min/max.
     """
     local_lower = np.inf
     local_upper = -np.inf
@@ -583,7 +584,7 @@ def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg
     return local_lower, local_upper
 
 
-def compute_leg_whisker_range_across_tracks(
+def compute_leg_robust_delta_range_across_tracks(
     track_progress_by_track,
     delta_by_track,
     progress_values,
@@ -591,9 +592,10 @@ def compute_leg_whisker_range_across_tracks(
     first_leg_delta_by_track,
 ):
     """
-    Compute whisker min/max for one leg across all tracks.
+    Compute robust min/max delta range for one leg across all tracks.
 
-    Used to derive per-leg local ranges while preserving outlier robustness.
+    Uses the same Tukey-style whisker bound method as
+    `compute_track_robust_delta_range` for consistency.
     """
     local_lower = np.inf
     local_upper = -np.inf
@@ -642,7 +644,7 @@ def compute_metric_scale_context(
     ):
         if progress.size == 0:
             continue
-        leg_range = compute_leg_whisker_range(
+        leg_range = compute_track_robust_delta_range(
             progress, delta_values, progress_values, first_leg_delta_by_track[track_index]
         )
         if leg_range is None:
@@ -827,7 +829,7 @@ def plot_speed_delta_box_plot(
     global_lower, global_upper, global_range, units_per_inch = scale_context
 
     for leg_index in range(leg_count - 1, -1, -1):
-        leg_range = compute_leg_whisker_range_across_tracks(
+        leg_range = compute_leg_robust_delta_range_across_tracks(
             track_progress_by_track,
             speed_delta_by_track,
             progress_values,
@@ -950,7 +952,7 @@ def plot_speed_delta_box_plot_by_boat(
         if progress.size == 0 or speed_delta.size == 0:
             continue
 
-        leg_range = compute_leg_whisker_range(
+        leg_range = compute_track_robust_delta_range(
             progress, speed_delta, progress_values, first_leg_delta_by_track[track_index]
         )
         if leg_range is None:
@@ -1373,7 +1375,7 @@ def plot_pace_delta_box_plot(
     global_lower, global_upper, global_range, units_per_inch = scale_context
 
     for leg_index in range(leg_count - 1, -1, -1):
-        leg_range = compute_leg_whisker_range_across_tracks(
+        leg_range = compute_leg_robust_delta_range_across_tracks(
             track_progress_by_track,
             pace_delta_by_track,
             progress_values,
@@ -1494,7 +1496,7 @@ def plot_pace_delta_box_plot_by_boat(
         if progress.size == 0 or pace_delta.size == 0:
             continue
 
-        leg_range = compute_leg_whisker_range(
+        leg_range = compute_track_robust_delta_range(
             progress, pace_delta, progress_values, first_leg_delta_by_track[track_index]
         )
         if leg_range is None:
