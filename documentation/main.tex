@@ -32,6 +32,7 @@
 \else
   \usepackage[a4paper,margin=2.5cm]{geometry}
 \fi
+\usepackage[T1]{fontenc}
 \usepackage{graphicx}
 \ifphonepdf
   % Phone embed guard band: keep a small horizontal margin to avoid edge clipping
@@ -116,7 +117,7 @@ Use the plot shapes as direct diagnostics:
 \paragraph{What stands out.}
 This leg contains a large start-phase effect. The wide spread is driven by late starters and congestion: when a boat is still stuck in the start pack (very low speed), its pace increases sharply and produces large positive $\Delta\mathrm{pace}$ outliers. Boats that clear the start line and traffic quickly produce distributions closer to $0$ (or below), while boats delayed in congestion show long positive tails that mostly represent start delay rather than steady sailing performance.
 \sectionbreak
-\section*{Leg 2: Troense-Thuro Rev}
+\section*{Leg 2: Troense-Thurø Rev}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-02-troense-thuro-rev.pdf}
@@ -132,7 +133,7 @@ This leg contains a large start-phase effect. The wide spread is driven by late 
 \paragraph{What stands out.}
 Compared to leg 1, the distributions are tighter: many boats sit closer to $0$ and the boxes are shorter. Boats that remain clearly offset from $0$ through this leg are carrying a persistent advantage or disadvantage at the same places on the course (not a single isolated incident).
 \sectionbreak
-\section*{Leg 3: Thuro Rev-Storebaeltsbroen}
+\section*{Leg 3: Thurø Rev-Storebæltsbroen}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
@@ -148,7 +149,7 @@ Compared to leg 1, the distributions are tighter: many boats sit closer to $0$ a
 \paragraph{What stands out.}
 This is a compression leg: many boats sit close to $0$ and the main differentiator is consistency. A narrow box means the boat stayed close to its typical pace delta through the leg; a long positive whisker means the boat had brief but very costly slowdowns at specific places.
 \sectionbreak
-\section*{Leg 4: Storebaeltsbroen-Fynshoved}
+\section*{Leg 4: Storebæltsbroen-Fynshoved}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
@@ -164,7 +165,7 @@ This is a compression leg: many boats sit close to $0$ and the main differentiat
 \paragraph{What stands out.}
 The slow side shows the important structure: when a boat's box lies mostly above $0$, the boat is slower than the baseline through most of the leg. When the upper whisker extends far above the box, the boat has a small number of locations where it loses a large amount of time per mile relative to the baseline.
 \sectionbreak
-\section*{Leg 5: Fynshoved-Aebelo}
+\section*{Leg 5: Fynshoved-Æbelø}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-05-fynshoved-aebelo.pdf}
@@ -180,7 +181,7 @@ The slow side shows the important structure: when a boat's box lies mostly above
 \paragraph{What stands out.}
 This leg shows clearer separation: boats spread further away from $0$ and the slow side shows larger spreads for some boats. When a boat has a high median \emph{and} a tall box, the boat is slower than baseline most of the time and also inconsistent within the leg; that combination produces large cumulative time loss.
 \sectionbreak
-\section*{Leg 6: Aebelo-Strib Fyr}
+\section*{Leg 6: Æbelø-Strib Fyr}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-06-aebelo-strib-fyr.pdf}
@@ -196,7 +197,7 @@ This leg shows clearer separation: boats spread further away from $0$ and the sl
 \paragraph{What stands out.}
 This leg separates boats into a faster group (negative deltas) and a slower group (positive deltas). Within each group, compare spreads: two boats have similar medians, but the boat with the narrower box is the boat with fewer large deviations from its typical pace delta through the leg.
 \sectionbreak
-\section*{Leg 7: Strib Fyr-Snaevringen}
+\section*{Leg 7: Strib Fyr-Snævringen}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-07-strib-fyr-snaevringen.pdf}
@@ -212,7 +213,7 @@ This leg separates boats into a faster group (negative deltas) and a slower grou
 \paragraph{What stands out.}
 This leg makes it easy to spot both speed and reliability. Boats with boxes centered below $0$ are faster-than-baseline; boats with boxes centered above $0$ are slower-than-baseline. A tight box with one long positive whisker points to a specific slow patch: most of the leg was fine, but one location produced a large time loss.
 \sectionbreak
-\section*{Leg 8: Snaevringen-Bogo}
+\section*{Leg 8: Snævringen-Bogø}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-08-snaevringen-bogo.pdf}
@@ -228,7 +229,7 @@ This leg makes it easy to spot both speed and reliability. Boats with boxes cent
 \paragraph{What stands out.}
 This leg shows the same two ingredients: offset from $0$ (faster or slower) and spread (stable or variable). Boats that combine a negative center and a narrow box are fast \emph{and} steady; boats that combine a positive center and a tall box are slow \emph{and} inconsistent.
 \sectionbreak
-\section*{Leg 9: Bogo-Horneland}
+\section*{Leg 9: Bogø-Horneland}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-leg-09-bogo-horneland.pdf}
@@ -281,9 +282,8 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \else
 \section*{Boat summaries (pace)}
 \fi
-% Maintained manually; scripts export figures only.
-\sectionbreak
-\subsection*{Boat: Saga}
+This section summarizes pace deltas (and speed deltas, if enabled) by boat across all legs. Each boat's distribution of deltas is aggregated across all legs to show where the boat was faster or slower than the baseline at the same places on the course. The same box plot anatomy applies: negative centers mean faster-than-baseline, positive centers mean slower-than-baseline, and tall boxes or long whiskers flag inconsistency or specific locations with large time loss.
+\subsection*{Saga}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-saga.pdf}
@@ -297,7 +297,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Sweet Escape}
+\subsection*{Sweet Escape}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-sweet-escape.pdf}
@@ -311,7 +311,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Mercutio}
+\subsection*{Mercutio}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-mercutio.pdf}
@@ -325,7 +325,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Gladys}
+\subsection*{Gladys}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-gladys.pdf}
@@ -339,35 +339,35 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Aegir 2.0}
+\subsection*{Ægir 2.0}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-aegir-2-0.pdf}
-\caption{Pace delta by leg for Aegir 2.0.}
+\caption{Pace delta by leg for Ægir 2.0.}
 \end{figure}
 \ifspeedplots
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/speed-delta-boat-aegir-2-0.pdf}
-\caption{Speed delta by leg for Aegir 2.0.}
+\caption{Speed delta by leg for Ægir 2.0.}
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Nordri}
+\subsection*{Nor\dh ri}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-nordri.pdf}
-\caption{Pace delta by leg for Nordri.}
+\caption{Pace delta by leg for Nor\dh ri.}
 \end{figure}
 \ifspeedplots
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/speed-delta-boat-nordri.pdf}
-\caption{Speed delta by leg for Nordri.}
+\caption{Speed delta by leg for Nor\dh ri.}
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Vera}
+\subsection*{Vera}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-vera.pdf}
@@ -381,7 +381,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Moana}
+\subsection*{Moana}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-moana.pdf}
@@ -395,7 +395,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: My}
+\subsection*{My}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-my.pdf}
@@ -409,7 +409,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Julia}
+\subsection*{Julia}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-julia.pdf}
@@ -423,7 +423,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Lets Sea}
+\subsection*{Lets Sea}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-lets-sea.pdf}
@@ -437,7 +437,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Chaya}
+\subsection*{Chaya}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-chaya.pdf}
@@ -451,7 +451,7 @@ This closing leg contains the largest slow outliers in the set of plots: some bo
 \end{figure}
 \fi
 \sectionbreak
-\subsection*{Boat: Samba}
+\subsection*{Samba}
 \begin{figure}[H]
 \centering
 \includegraphics{figures/\figurevariant/pace-delta-boat-samba.pdf}

@@ -176,6 +176,20 @@ def save_figure(fig, output_path):
     fig.savefig(output_path)
 
 
+def latex_display_name(name: str) -> str:
+    """
+    Map selected boat names to explicit LaTeX spellings for report text.
+
+    Keep source metadata unchanged (for IDs/filenames) and only alter rendered
+    labels/titles in plots.
+    """
+    if name == "Aegir 2.0":
+        return "Ægir 2.0"
+    if name == "Nordri":
+        return r"Nor\dh ri"
+    return name
+
+
 def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.0):
     """
     Resize a box-plot figure so y-units map to consistent physical height.
@@ -894,7 +908,7 @@ def plot_speed_delta_box_plot(
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
-            [tracks[track_index]["name"] for track_index, _, _ in leg_ordered],
+            [latex_display_name(tracks[track_index]["name"]) for track_index, _, _ in leg_ordered],
             rotation=45,
             ha="right",
         )
@@ -1021,7 +1035,7 @@ def plot_speed_delta_box_plot_by_boat(
         ax.set_xlim(1.0 - boat_tick_edge_padding, leg_count + boat_tick_edge_padding)
         ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
         ax.set_ylim(local_lower, local_upper)
-        ax.set_title(track.get("name", "Boat"))
+        ax.set_title(latex_display_name(track.get("name", "Boat")))
 
         if export_dir is not None:
             # Persist per-boat figures for inclusion in reports.
@@ -1439,7 +1453,7 @@ def plot_pace_delta_box_plot(
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
-            [tracks[track_index]["name"] for track_index, _, _ in leg_ordered],
+            [latex_display_name(tracks[track_index]["name"]) for track_index, _, _ in leg_ordered],
             rotation=45,
             ha="right",
         )
@@ -1565,7 +1579,7 @@ def plot_pace_delta_box_plot_by_boat(
         ax.set_xlim(1.0 - boat_tick_edge_padding, leg_count + boat_tick_edge_padding)
         ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
         ax.set_ylim(local_lower, local_upper)
-        ax.set_title(track.get("name", "Boat"))
+        ax.set_title(latex_display_name(track.get("name", "Boat")))
 
         if export_dir is not None:
             # Export per-boat figures for documentation.
@@ -1624,7 +1638,13 @@ def plot_speed_range_along_route(
         if speed_on_grid is None:
             continue
         line_color = track["color"] or default_color[idx]
-        ax.plot(window_progress, speed_on_grid, color=line_color, linewidth=0.8, label=track["name"])
+        ax.plot(
+            window_progress,
+            speed_on_grid,
+            color=line_color,
+            linewidth=0.8,
+            label=latex_display_name(track["name"]),
+        )
 
     # Envelope lines show fleet-wide min/mean/max at each progress window.
     ax.plot(window_progress, min_speed, "b-", linewidth=1.5, label="Slowest speed (min)")
