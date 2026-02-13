@@ -1,4 +1,30 @@
-import json
+"""
+Silverrudder figure generation pipeline.
+
+This script builds the PDF figures consumed by the LaTeX report. It intentionally
+keeps all logic in one place so the data-preparation method and the plotting
+method use the same assumptions.
+
+High-level idea:
+1. Load race metadata + raw GPS samples for each boat.
+2. Convert each sample onto a shared 1D "progress along route" axis.
+3. Build local fleet baselines (speed/pace) at each progress window.
+4. Compute per-sample deltas (boat value - fleet baseline value).
+5. Aggregate deltas by leg and by boat.
+6. Export two figure sets (desktop and phone) with profile-specific layout.
+
+Important terms used throughout:
+- routeIdx: Each sample's nearest index on the average route polyline.
+- progress: routeIdx converted to [0, 1] for leg slicing and interpolation.
+- window stats: Fleet summary (min/max/mean) computed over local progress windows.
+- pace: Minutes per nautical mile, computed as 60 / speed(knots).
+- delta: Boat metric minus local fleet baseline at the same progress.
+
+Output behavior:
+- Figures are always exported to documentation/figures/{desktop,phone}/...
+- This file does not compile LaTeX. It only generates figure PDFs.
+"""
+
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -6,8 +32,6 @@ from pathlib import Path
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap, Normalize
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Computer Modern Roman"]
@@ -17,8 +41,23 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 
 import box_plot_utils as box_plots
 import silver_helpers as sh
+import silver_plot_helpers as sph
 
-# Centralize box-plot styling so every figure uses shared defaults with per-metric overrides.
+# Reader guide for this file:
+# - main() orchestrates the full pipeline and is the best place to start.
+# - Plotting/tick/map boilerplate is in silver_plot_helpers.py.
+# - "Waypoint / leg helper functions" here convert progress into leg-aware slices.
+# - "Speed/Pace delta sampling..." computes reusable data used by plot exporters.
+# - "plot_*_box_plot" functions are the report-facing exporters.
+# - All plotting functions accept export_dir/export_and_close to support both
+#   batch mode and interactive debugging mode without code duplication.
+
+# ---------------------------------------------------------------------------
+# Shared style constants
+# ---------------------------------------------------------------------------
+# Keep all style knobs centralized so plot appearance remains consistent.
+# Speed and pace share most styling, but axis tick behavior differs slightly.
+# Physical y-scaling is controlled elsewhere through units-per-inch settings.
 BOX_PLOT_STYLE_COMMON = box_plots.BoxPlotStyle()
 BOX_PLOT_AXIS_STYLE_COMMON = box_plots.BoxPlotAxisStyle()
 BOX_PLOT_STYLE_SPEED = BOX_PLOT_STYLE_COMMON
@@ -30,7 +69,15 @@ BOX_PLOT_WHISKER_SCALE = 1.5
 
 @dataclass(frozen=True)
 class FigureProfile:
-    """Profile-specific export settings for figure layout and typography."""
+    """
+    Rendering profile for one output family (desktop or phone).
+
+    Why this exists:
+    - The same data must be readable in two contexts with very different widths.
+    - We want textual sizing and physical axis spacing to stay intentional.
+    - By grouping settings in one dataclass, the rest of the plotting code can
+      stay profile-agnostic.
+    """
 
     name: str
     output_subdir: str
@@ -93,25 +140,55 @@ FIGURE_PROFILES = {
 }
 ACTIVE_FIGURE_PROFILE = FIGURE_PROFILES["desktop"]
 
+
+# ---------------------------------------------------------------------------
+# Small utility helpers used by many plotting functions
+# ---------------------------------------------------------------------------
 def set_active_figure_profile(profile):
-    """Set active profile used by plot helpers for marker/text sizing."""
+    """
+    Set the global active profile.
+
+    Plot helpers read ACTIVE_FIGURE_PROFILE at render time for marker size,
+    waypoint label font size, margin policy, and physical axis scaling factors.
+    """
     global ACTIVE_FIGURE_PROFILE
     ACTIVE_FIGURE_PROFILE = profile
 
 
 def prepare_figure(fig, export_and_close=False):
-    """Keep interactive maximize behavior without overriding export sizing."""
+    """
+    Apply interactive-only figure prep.
+
+    During batch export we deliberately avoid maximizing windows because exported
+    size should come from explicit figsize/layout settings, not screen geometry.
+    """
     if not export_and_close:
         sh.maximize_figure(fig)
 
 
 def save_figure(fig, output_path):
-    """Save figure without external scaling; keep canvas size as the source of truth."""
+    """
+    Save figure exactly as configured.
+
+    We do not pass bbox/scale overrides here; canvas size and subplot margins
+    are treated as the single source of truth for text and geometry.
+    """
     fig.savefig(output_path)
 
 
 def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.0):
-    """Set figure size so y-axis data spacing is consistent in physical units."""
+    """
+    Resize a box-plot figure so y-units map to consistent physical height.
+
+    Parameters:
+    - local_range: Data range currently shown on y-axis.
+    - units_per_inch: Desired conversion from y-units -> inches.
+    - extra_bottom_in: Additional bottom margin (inches) for long rotated labels.
+
+    This is the key function behind "comparable plots":
+    if two plots have the same units_per_inch, one extra unit on the y-axis
+    occupies the same physical height in both exported PDFs.
+    """
     fig_width = fig.get_size_inches()[0]
     data_height_in = local_range / units_per_inch if units_per_inch > 0 else fig.get_size_inches()[1]
     top_in = ACTIVE_FIGURE_PROFILE.boxplot_top_margin_in
@@ -119,7 +196,7 @@ def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom
     left_in = ACTIVE_FIGURE_PROFILE.boxplot_left_margin_in
     right_in = ACTIVE_FIGURE_PROFILE.boxplot_right_margin_in
 
-    # Figure height is data-height plus fixed non-data margins.
+    # Final figure height = data band height + fixed top/bottom UI margins.
     fig_height = data_height_in + top_in + bottom_in
     fig.set_size_inches(fig_width, fig_height, forward=True)
 
@@ -131,18 +208,26 @@ def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom
 
 
 def main():
-    # End-to-end pipeline: load metadata and tracks, align samples to a reference route,
-    # compute per-window baseline stats, then prepare plot-ready data for the chosen outputs.
+    # -----------------------------------------------------------------------
+    # Stage 1: Load raw inputs
+    # -----------------------------------------------------------------------
+    # End-to-end pipeline:
+    # - load metadata + tracks
+    # - align samples to a reference route
+    # - compute baseline statistics
+    # - build/export figure families
     data_root = Path("data") / "silverrudder_2025"
     filename = str(data_root / "Silverrudder 2025_Keelboats Small_gps_data.csv")
     metadata_path = data_root / "race_metadata.json"
 
-    # Metadata provides stable IDs, display names, and optional colors used across plots.
+    # Metadata contains stable IDs/names/colors and race-time information.
+    # All later labeling/order/color behavior depends on this mapping.
     race_meta = sh.load_race_metadata(metadata_path)
     track_id_keys = race_meta["track_id_keys"]
     boat_names = race_meta["boat_names"]
 
-    # Build per-boat tracks from raw samples; names are attached early for consistent labeling.
+    # Build per-boat track structs from the raw CSV.
+    # We attach names early so every downstream warning/plot already has human labels.
     tracking_data = sh.read_tracking_csv_as_struct(filename)
     tracks = sh.build_tracks(
         tracking_data,
@@ -155,45 +240,62 @@ def main():
     tracks = sh.convert_speed_to_knots(tracks)
     track_name_map = dict(zip(track_id_keys, boat_names))
     tracks = sh.apply_track_names(tracks, track_name_map)
-    # Start time anchors the first-leg pace/speed metrics to an absolute clock.
+    # First-leg scalar metrics are gate-time based (start -> first gate),
+    # so we need a reliable absolute start timestamp.
     start_time_utc = parse_start_time_utc(race_meta)
 
-    # Gate crossings let us trim each track to the common race segment (start -> finish).
+    # -----------------------------------------------------------------------
+    # Stage 2: Route/gate normalization
+    # -----------------------------------------------------------------------
+    # Detect Start/Finish gate positions and crop each track to that race segment.
+    # This avoids contamination from pre-start and post-finish samples.
     geo_data_path = metadata_path.parent / "waypoints" / "geo_data.json"
     waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos = load_waypoint_gates(geo_data_path)
     gate_times_by_track = sh.compute_gate_crossings(tracks, waypoint_gates)
     tracks = sh.trim_tracks_by_gate_times(tracks, gate_times_by_track, start_gate_pos, finish_gate_pos)
-    # Colors are mapped by boat name to keep figures visually consistent across plots.
+    # Apply fixed boat colors so all plots stay visually coherent.
     boat_colors = race_meta.get("boat_colors", {})
     track_color_map = sh.build_boat_color_map(boat_names, boat_colors)
     tracks = sh.apply_track_colors(tracks, track_color_map)
 
     route_sample_count = 20000
-    # Search window limits route-index jumps when mapping samples onto the reference route.
+    # Search window limits route-index jumps when mapping GPS points to route points.
+    # This reduces accidental back-and-forth index spikes.
     route_search_window_half_width = int(np.ceil(route_sample_count / 100))
-    # The average route provides a 1D progress axis for comparing boats at the same location.
+    # The average route is the shared geometry used to define "same location on course".
+    # Every boat sample is projected onto this route to get a comparable progress value.
     average_route = sh.compute_average_route(route_sample_count, geo_data_path)
     tracks = sh.map_track_points_to_route(tracks, average_route, route_search_window_half_width)
     tracks = sh.remove_route_index_spikes(tracks, route_sample_count)
-    # Waypoint progress is used to define leg boundaries and label x-axes.
+    # Waypoint progress values define leg boundaries for all leg-based plots.
     way_point_progress, way_point_names = sh.compute_waypoint_progress_from_gates(average_route, waypoint_gates)
 
     window_sample_count = 50
     window_step_samples = 1
     filter_alpha = 0.01
-    # Per-window stats establish the fleet baseline used for alpha coloring and delta plots.
+    # -----------------------------------------------------------------------
+    # Stage 3: Fleet baseline construction
+    # -----------------------------------------------------------------------
+    # Compute fleet window stats along progress. This is the baseline for:
+    # - map alpha coloring
+    # - speed delta calculations
+    # - pace delta calculations
     tracks, speed_window_stats = sh.compute_sample_alpha_by_route_windows(
         tracks, route_sample_count, window_sample_count, window_step_samples, filter_alpha
     )
 
-    # When enabled, figures are saved to PDF and immediately closed to limit memory use.
+    # -----------------------------------------------------------------------
+    # Stage 4: Export policy and plot selection
+    # -----------------------------------------------------------------------
+    # We run in batch-export mode by default: no interactive windows, write PDFs, close.
     export_and_close_figures = True
     figure_output_root = Path("documentation") / "figures"
-    # Disable interactive display when exporting so figures do not pop up during batch runs.
+    # Turn off interactive backends for predictable batch operation.
     if export_and_close_figures:
         plt.ioff()
 
-    # Plot toggles let us selectively generate the heavier figures when needed.
+    # Toggle matrix for each output group.
+    # Keeping toggles centralized makes experimentation easier without touching logic.
     show_map_plot = False
     show_pace_box_plots = True
     show_pace_box_plots_by_boat = True
@@ -201,7 +303,10 @@ def main():
     show_speed_box_plots_by_boat = True
     show_pace_range_plot = False
 
-    # Precompute pace deltas once when either pace plot is enabled.
+    # -----------------------------------------------------------------------
+    # Stage 5: Shared data prep for speed/pace variants
+    # -----------------------------------------------------------------------
+    # Precompute pace inputs once and reuse for both "by leg" + "by boat" pace plots.
     pace_box_plot_data = None
     if show_pace_box_plots or show_pace_box_plots_by_boat:
         pace_box_plot_data = prepare_pace_delta_box_plot_data(
@@ -214,7 +319,7 @@ def main():
             first_leg_gate_pos,
         )
 
-    # Precompute speed deltas once when either speed plot is enabled.
+    # Precompute speed inputs once and reuse for both speed plot families.
     speed_box_plot_data = None
     if show_speed_box_plots or show_speed_box_plots_by_boat:
         speed_box_plot_data = prepare_speed_delta_box_plot_data(
@@ -227,14 +332,22 @@ def main():
             first_leg_gate_pos,
         )
 
+    # -----------------------------------------------------------------------
+    # Stage 6: Render profile families
+    # -----------------------------------------------------------------------
+    # Always export both families so LaTeX wrappers can choose inclusion profile later.
     figure_profiles = [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
     for figure_profile in figure_profiles:
         set_active_figure_profile(figure_profile)
+        # Profile subfolder keeps outputs isolated:
+        # documentation/figures/desktop/*
+        # documentation/figures/phone/*
         export_dir = (
             figure_output_root / figure_profile.output_subdir
             if export_and_close_figures
             else None
         )
+        # rc_context ensures profile typography/size settings do not leak globally.
         with matplotlib.rc_context(figure_profile.rc_params):
             if show_map_plot:
                 plot_colored_tracks(
@@ -289,13 +402,21 @@ def main():
                     export_and_close=export_and_close_figures,
                 )
 
-    # Only display figures interactively when we are not in export-and-close mode.
+    # In interactive mode only, keep figures open for manual inspection.
     if not export_and_close_figures:
         plt.show()
 
 
+# ---------------------------------------------------------------------------
+# Waypoint / leg helper functions
+# ---------------------------------------------------------------------------
 def parse_start_time_utc(race_meta):
-    """Parse the race start time from metadata into UTC seconds."""
+    """
+    Parse race start time from metadata into UTC epoch seconds.
+
+    The metadata stores a local timestamp plus an offset; we convert once here
+    so every first-leg calculation uses the same time basis.
+    """
     # Metadata stores local time plus offset; convert once so downstream metrics stay consistent.
     local_offset_hours = race_meta.get("local_offset_hours", 0)
     start_time_local = race_meta.get("start_time_local", "")
@@ -306,7 +427,15 @@ def parse_start_time_utc(race_meta):
 
 
 def load_waypoint_gates(geo_data_path):
-    """Load waypoint gates and locate start/finish indices."""
+    """
+    Load gate geometry and discover canonical Start/Finish gate indices.
+
+    Returns:
+    - waypoint_gates: Full gate list from geo data.
+    - start_gate_pos: Index of Start gate in waypoint_gates.
+    - finish_gate_pos: Index of Finish gate in waypoint_gates.
+    - first_leg_gate_pos: Index of first mark after Start.
+    """
     _, waypoint_gates = sh.load_geo_data(geo_data_path)
     start_gate_pos, finish_gate_pos = sh.find_start_finish_gate_positions(waypoint_gates)
     # The first leg is defined as Start -> next gate, used for scalar delta metrics.
@@ -316,74 +445,13 @@ def load_waypoint_gates(geo_data_path):
     return waypoint_gates, start_gate_pos, finish_gate_pos, first_leg_gate_pos
 
 
-def normalize_waypoint_series(waypoint_progress, waypoint_names):
-    """Return finite waypoint progress values with a padded label list."""
-    progress_values = np.asarray(waypoint_progress, dtype=float).flatten()
-    label_values = list(waypoint_names) if waypoint_names is not None else []
-
-    # Keep labels aligned with progress values even when metadata is short/long.
-    if label_values and progress_values.size:
-        if len(label_values) < progress_values.size:
-            label_values += [""] * (progress_values.size - len(label_values))
-        if len(label_values) > progress_values.size:
-            label_values = label_values[: progress_values.size]
-
-    # Drop NaN progress entries and the matching labels to avoid misaligned ticks.
-    finite_mask = np.isfinite(progress_values)
-    progress_values = progress_values[finite_mask]
-    label_values = [label for label, keep in zip(label_values, finite_mask) if keep]
-    return progress_values, label_values
-
-
-def filter_waypoints_to_unit_interval(progress_values, label_values):
-    """Clamp waypoint progress to [0, 1] and keep labels aligned."""
-    # Progress outside [0, 1] does not lie on the plotted route, so ignore it.
-    in_range_mask = (progress_values >= 0) & (progress_values <= 1)
-    return progress_values[in_range_mask], [
-        label for label, keep in zip(label_values, in_range_mask) if keep
-    ]
-
-
-def plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names):
-    """Draw waypoint markers and labels along the rhumb line."""
-    progress_values, label_values = normalize_waypoint_series(waypoint_progress, waypoint_names)
-    progress_values, label_values = filter_waypoints_to_unit_interval(
-        progress_values, label_values
-    )
-    if progress_values.size == 0:
-        return
-
-    route_count = len(average_route["lat"])
-    if route_count == 0:
-        return
-
-    # Convert fractional progress into route indices so labels land on the plotted line.
-    waypoint_indices = np.unique(
-        np.clip(np.rint(progress_values * (route_count - 1)).astype(int), 0, route_count - 1)
-    )
-    waypoint_lon = np.asarray(average_route["lon"])[waypoint_indices]
-    waypoint_lat = np.asarray(average_route["lat"])[waypoint_indices]
-    ax.scatter(waypoint_lon, waypoint_lat, s=90, color="black", zorder=5)
-
-    # Offset labels slightly so they remain readable on top of the route line.
-    for progress_value, name in zip(progress_values, label_values):
-        if not name:
-            continue
-        point_index = int(round(progress_value * (route_count - 1)))
-        point_index = max(0, min(route_count - 1, point_index))
-        ax.annotate(
-            name,
-            (average_route["lon"][point_index], average_route["lat"][point_index]),
-            textcoords="offset points",
-            xytext=(6, 6),
-            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
-            color="black",
-            zorder=6,
-        )
-
-
 def build_leg_labels(progress_values, waypoint_labels):
-    """Create leg labels from consecutive waypoint names."""
+    """
+    Build per-leg labels from consecutive waypoint labels.
+
+    Example:
+    [Start, Troense, Thuro] -> ["Start-Troense", "Troense-Thuro"]
+    """
     leg_labels = []
     # Keep labels usable even if some waypoint names are missing in metadata.
     for leg_index in range(len(progress_values) - 1):
@@ -395,7 +463,7 @@ def build_leg_labels(progress_values, waypoint_labels):
 
 
 def get_leg_bounds(progress_values, leg_index):
-    """Return ordered start/end bounds for a leg index."""
+    """Return monotonically ordered [start, end] progress bounds for one leg."""
     leg_start = progress_values[leg_index]
     leg_end = progress_values[leg_index + 1]
     if leg_start > leg_end:
@@ -404,7 +472,12 @@ def get_leg_bounds(progress_values, leg_index):
 
 
 def compute_first_leg_distance_m(average_route, progress_values):
-    """Compute first-leg distance in meters from the rhumb line."""
+    """
+    Compute physical first-leg distance (meters) from route geometry + progress.
+
+    First-leg scalar pace/speed metrics use gate timing and therefore need a
+    physical distance estimate for Start -> first gate.
+    """
     if len(progress_values) < 2:
         return np.nan
 
@@ -419,7 +492,12 @@ def compute_first_leg_distance_m(average_route, progress_values):
 
 
 def compute_first_leg_delta(values_by_track):
-    """Return per-track delta from the mean for the first-leg metric."""
+    """
+    Convert raw first-leg scalar values into deltas against fleet mean.
+
+    The output semantics match later per-sample deltas:
+    negative pace delta = faster; positive speed delta = faster.
+    """
     # Center first-leg values on the fleet mean so deltas are comparable to later legs.
     if values_by_track.size:
         mean_value = float(np.nanmean(values_by_track))
@@ -429,7 +507,16 @@ def compute_first_leg_delta(values_by_track):
 
 
 def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index, first_leg_value):
-    """Extract samples for a specific leg, or the first-leg scalar value."""
+    """
+    Return a track's samples for one leg.
+
+    Behavior:
+    - leg_index == 0: returns a synthetic 1-value array from first_leg_value.
+    - later legs: slices delta_values by progress interval.
+
+    This is the key abstraction that lets first leg and later legs share the
+    same plotting pipeline even though they originate from different data.
+    """
     if leg_index == 0:
         # The first leg uses the gate-based scalar delta to avoid sparse route-window sampling.
         if not np.isfinite(first_leg_value):
@@ -449,7 +536,12 @@ def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index
 
 
 def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, leg_index, first_leg_delta_by_track):
-    """Order tracks by mean value within a leg."""
+    """
+    Collect + rank tracks by leg mean delta.
+
+    Returns list entries as:
+    (track_index, leg_mean, leg_samples)
+    """
     leg_ordered = []
     # Sorting by mean delta makes the box-plot ordering reflect relative performance.
     for track_index, (progress, delta_values) in enumerate(
@@ -466,7 +558,11 @@ def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, 
 
 
 def compute_leg_whisker_range(progress, delta_values, progress_values, first_leg_value):
-    """Return whisker bounds for all legs for a single track."""
+    """
+    Compute a single track's whisker min/max across all legs.
+
+    Used to derive stable y-axis bounds for "by boat" figures.
+    """
     local_lower = np.inf
     local_upper = -np.inf
     # Aggregate whisker bounds across all legs to keep per-boat y-scales consistent.
@@ -494,7 +590,11 @@ def compute_leg_whisker_range_across_tracks(
     leg_index,
     first_leg_delta_by_track,
 ):
-    """Return whisker bounds for one leg aggregated across all tracks."""
+    """
+    Compute whisker min/max for one leg across all tracks.
+
+    Used to derive per-leg local ranges while preserving outlier robustness.
+    """
     local_lower = np.inf
     local_upper = -np.inf
     for track_index, (progress, delta_values) in enumerate(
@@ -524,7 +624,17 @@ def compute_metric_scale_context(
     first_leg_delta_by_track,
     units_per_inch_factor=1.0,
 ):
-    """Return global y-range and units-per-inch for one metric (speed or pace)."""
+    """
+    Build metric-wide scaling context for physically comparable plots.
+
+    Returns:
+    - global_lower/global_upper/global_range: robust global y-range
+    - units_per_inch: y-unit -> inch conversion used in figure sizing
+
+    This context is shared by:
+    - per-leg plots for that metric
+    - per-boat plots for that metric
+    """
     global_lower = float("inf")
     global_upper = float("-inf")
     for track_index, (progress, delta_values) in enumerate(
@@ -549,146 +659,6 @@ def compute_metric_scale_context(
     return global_lower, global_upper, global_range, units_per_inch
 
 
-def apply_waypoint_ticks(ax, waypoint_progress, waypoint_names):
-    """Replace progress ticks with waypoint labels plus Start/Finish."""
-    progress_values, label_values = normalize_waypoint_series(waypoint_progress, waypoint_names)
-    if progress_values.size == 0:
-        ax.set_xticks([0.0, 1.0])
-        ax.set_xticklabels(["Start", "Finish"], rotation=45, ha="right")
-        return
-
-    # Normalize progress and remove any labels that already encode Start/Finish.
-    progress_values = np.clip(progress_values, 0.0, 1.0)
-    tolerance = 1e-6
-
-    def is_start_finish_label(label_text):
-        label_text = str(label_text).strip().lower()
-        return label_text.startswith("start") or label_text.startswith("finish")
-
-    filtered_progress = []
-    filtered_labels = []
-    for value, label in zip(progress_values.tolist(), label_values):
-        if is_start_finish_label(label):
-            continue
-        filtered_progress.append(value)
-        filtered_labels.append(label)
-
-    # Always include Start and Finish even if the input list omitted them.
-    filtered_progress.extend([0.0, 1.0])
-    filtered_labels.extend(["Start", "Finish"])
-
-    progress_values = np.asarray(filtered_progress, dtype=float)
-    label_values = [filtered_labels[idx] for idx in np.argsort(progress_values)]
-    progress_values = np.sort(progress_values)
-
-    # Merge labels that land on the same progress to avoid overlapping ticks.
-    merged_progress = []
-    merged_labels = []
-    for progress_value, label in zip(progress_values, label_values):
-        if abs(progress_value - 0.0) <= tolerance:
-            label = "Start"
-        if abs(progress_value - 1.0) <= tolerance:
-            label = "Finish"
-        if not merged_progress:
-            merged_progress.append(progress_value)
-            merged_labels.append(label)
-            continue
-        if abs(progress_value - merged_progress[-1]) <= tolerance:
-            if label:
-                if abs(progress_value - 0.0) <= tolerance:
-                    merged_labels[-1] = "Start"
-                elif abs(progress_value - 1.0) <= tolerance:
-                    merged_labels[-1] = "Finish"
-                elif merged_labels[-1]:
-                    merged_labels[-1] = f"{merged_labels[-1]} / {label}"
-                else:
-                    merged_labels[-1] = label
-            continue
-        merged_progress.append(progress_value)
-        merged_labels.append(label)
-
-    # Escape labels when TeX rendering is enabled to avoid LaTeX compile errors.
-    if matplotlib.rcParams.get("text.usetex", False):
-        merged_labels = [sh.escape_latex_text(lbl) for lbl in merged_labels]
-
-    ax.set_xticks(merged_progress)
-    ax.set_xticklabels(merged_labels, rotation=45, ha="right")
-
-
-def resample_track_speed(track, window_progress, route_sample_count, filter_alpha):
-    """Resample and low-pass a track's speed onto the window progress grid."""
-    route_index = track["routeIdx"]
-    speed = track["speed"]
-    valid_mask = (
-        np.isfinite(route_index)
-        & np.isfinite(speed)
-        & (speed > 0)
-        & (route_index >= 1)
-        & (route_index <= route_sample_count)
-    )
-    if not valid_mask.any():
-        return None
-
-    # Map each speed sample to fractional progress so we can compare across boats.
-    progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
-    speed_valid = speed[valid_mask]
-    progress_unique, unique_index = np.unique(progress, return_index=True)
-    speed_unique = speed_valid[unique_index]
-    if progress_unique.size < 2:
-        return None
-
-    # Interpolate onto the window grid then smooth to match the alpha baseline.
-    sort_index = np.argsort(progress_unique)
-    progress_unique = progress_unique[sort_index]
-    speed_unique = speed_unique[sort_index]
-
-    speed_on_grid = np.interp(window_progress, progress_unique, speed_unique)
-    outside_mask = (window_progress < progress_unique[0]) | (window_progress > progress_unique[-1])
-    speed_on_grid[outside_mask] = np.nan
-    return sh.lowpass_forward_backward(speed_on_grid, filter_alpha)
-
-
-def build_alpha_colormap():
-    """Return the trimmed 'hot' colormap and normalization for alpha."""
-    # Trim the brightest tail to keep the palette from washing out at high alpha.
-    base_cmap = plt.get_cmap("hot", 256)
-    cmap_colors = base_cmap(np.linspace(0, 229 / 255, 230))
-    cmap_colors[0, :] = np.array([0, 0, 0, 1])
-    cmap = LinearSegmentedColormap.from_list("hot_trim", cmap_colors)
-    norm = Normalize(0, 1)
-    return cmap, norm
-
-
-def add_alpha_tracks(ax, tracks, cmap, norm):
-    """Add alpha-colored line collections to the map."""
-    line_collections = []
-    for track in tracks:
-        longitude = track["lon"]
-        latitude = track["lat"]
-        alpha_values = track["alpha"].astype(float)
-        alpha_values[~np.isfinite(alpha_values)] = 0.5
-
-        if longitude.size < 2:
-            continue
-
-        # Build per-segment line collections so each segment can be colored by alpha.
-        points = np.column_stack([longitude, latitude])
-        segments = np.stack([points[:-1], points[1:]], axis=1)
-        segment_values = alpha_values[:-1]
-
-        line_collection = LineCollection(segments, cmap=cmap, norm=norm, linewidths=1.5)
-        line_collection.set_array(segment_values)
-        line_collection.set_picker(True)
-        line_collection.set_pickradius(6)
-        # Attach metadata for the custom data-tip handler.
-        line_collection.track_name = track["name"]
-        line_collection.track_speed = track["speed"]
-        ax.add_collection(line_collection)
-        line_collections.append(line_collection)
-
-    return line_collections
-
-
 def plot_colored_tracks(
     tracks,
     average_route,
@@ -698,7 +668,14 @@ def plot_colored_tracks(
     export_path=None,
     export_and_close=False,
 ):
-    """Plot each competitor track colored by local relative speed."""
+    """
+    Plot route map with all tracks, colored by local relative speed.
+
+    This is mainly a diagnostic/inspection figure:
+    - validates route mapping
+    - validates alpha baseline behavior
+    - supports interactive datatips for manual checks
+    """
     # Disable TeX text rendering for the map to keep annotations lightweight.
     previous_usetex = matplotlib.rcParams.get("text.usetex", False)
     matplotlib.rcParams["text.usetex"] = False
@@ -709,7 +686,7 @@ def plot_colored_tracks(
     sh.apply_local_meter_aspect(ax, average_route)
 
     # Coastline is purely contextual; crop to track bounds to keep it lightweight.
-    plot_coast_geojson_cropped(ax, tracks, "ne_10m_coastline.geojson", 0.15)
+    sph.plot_coast_geojson_cropped(ax, tracks, "ne_10m_coastline.geojson", 0.15)
 
     rhumb_line, = ax.plot(
         average_route["lon"],
@@ -721,10 +698,16 @@ def plot_colored_tracks(
     rhumb_line.set_picker(True)
     rhumb_line.set_pickradius(6)
 
-    plot_waypoints_on_route(ax, average_route, waypoint_progress, waypoint_names)
+    sph.plot_waypoints_on_route(
+        ax,
+        average_route,
+        waypoint_progress,
+        waypoint_names,
+        ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
+    )
 
-    cmap, norm = build_alpha_colormap()
-    add_alpha_tracks(ax, tracks, cmap, norm)
+    cmap, norm = sph.build_alpha_colormap()
+    sph.add_alpha_tracks(ax, tracks, cmap, norm)
 
     # Colorbar uses the same normalization as the segment coloring.
     scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -749,7 +732,12 @@ def plot_colored_tracks(
 
 @dataclass(frozen=True)
 class SpeedDeltaBoxPlotData:
-    """Shared inputs for speed delta box plots."""
+    """
+    Shared speed-delta payload used by both speed plot families.
+
+    Storing this in a dataclass avoids recomputing expensive sampling logic and
+    makes function signatures easier to reason about.
+    """
 
     track_progress_by_track: List[np.ndarray]
     speed_delta_by_track: List[np.ndarray]
@@ -767,7 +755,12 @@ def prepare_speed_delta_box_plot_data(
     start_time_utc,
     first_leg_gate_pos,
 ) -> Optional[SpeedDeltaBoxPlotData]:
-    """Compute shared inputs for speed delta box plots, or return None when unavailable."""
+    """
+    Prepare all speed-delta structures required for plotting.
+
+    Returns None when required prerequisites are missing, allowing callers to
+    skip speed plotting gracefully.
+    """
     # Reuse the same delta samples for both "per leg" and "per boat" plots.
     track_progress_by_track, speed_delta_by_track = compute_speed_delta_samples(
         tracks, speed_window_stats
@@ -805,7 +798,12 @@ def plot_speed_delta_box_plot(
     export_dir=None,
     export_and_close=False,
 ):
-    """Plot speed-delta box plots per leg using precomputed inputs."""
+    """
+    Export one speed-delta figure per leg (boats on x-axis).
+
+    Sorting:
+    - Higher speed delta is better, so ordering is descending by leg mean.
+    """
     if speed_plot_data is None:
         return
 
@@ -918,7 +916,11 @@ def plot_speed_delta_box_plot_by_boat(
     export_dir=None,
     export_and_close=False,
 ):
-    """Plot speed-delta box plots per boat using precomputed inputs."""
+    """
+    Export one speed-delta figure per boat (legs on x-axis).
+
+    These figures are intended for skipper-specific diagnosis across legs.
+    """
     if speed_plot_data is None:
         return
 
@@ -1029,8 +1031,17 @@ def plot_speed_delta_box_plot_by_boat(
             plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# Speed/Pace delta sampling and first-leg scalar derivation
+# ---------------------------------------------------------------------------
 def compute_speed_delta_samples(tracks, speed_window_stats):
-    """Prepare per-track progress and speed-delta samples for reuse in multiple plots."""
+    """
+    Build per-track speed delta samples against fleet mean-by-progress baseline.
+
+    Output:
+    - track_progress_by_track[i]: progress vector for boat i
+    - speed_delta_by_track[i]: speed - baseline_speed at matching progress
+    """
     if "meanSpeedByWindow" not in speed_window_stats:
         return None, None
 
@@ -1104,7 +1115,12 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
 
 
 def compute_first_leg_speed_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
-    """Compute per-boat average speed for the first leg from start to the first gate."""
+    """
+    Compute first-leg average speed (kn) from Start -> first gate crossing.
+
+    This first leg is treated specially because route-window samples can be
+    sparse/noisy during starts; gate-time based scalar is more stable here.
+    """
     speed_values = []
     # First-leg speed depends on start time and gate crossing times; bail out if missing.
     if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
@@ -1138,7 +1154,13 @@ def compute_first_leg_speed_by_track(tracks, start_time_utc, first_leg_gate_pos,
 
 
 def compute_pace_delta_samples(tracks, speed_window_stats):
-    """Prepare per-track progress and pace-delta samples for reuse in multiple plots."""
+    """
+    Build per-track pace delta samples against fleet baseline pace.
+
+    Pace baseline preference:
+    1) use meanPaceByWindow if available
+    2) otherwise derive as 60 / meanSpeedByWindow
+    """
     if "meanSpeedByWindow" not in speed_window_stats:
         return None, None
 
@@ -1222,7 +1244,12 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
 
 
 def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
-    """Compute per-boat pace for the first leg from start time to first gate."""
+    """
+    Compute first-leg pace (min/NM) from Start -> first gate crossing.
+
+    Same philosophy as first-leg speed helper: use gate timing to avoid
+    start-area sampling artifacts.
+    """
     pace_values = []
     # First-leg pace depends on the race start time and gate crossing time.
     if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
@@ -1253,7 +1280,11 @@ def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, 
 
 @dataclass(frozen=True)
 class PaceDeltaBoxPlotData:
-    """Shared inputs for pace delta box plots."""
+    """
+    Shared pace-delta payload used by both pace plot families.
+
+    Mirrors SpeedDeltaBoxPlotData so the two metric pipelines stay symmetric.
+    """
 
     track_progress_by_track: List[np.ndarray]
     pace_delta_by_track: List[np.ndarray]
@@ -1271,7 +1302,11 @@ def prepare_pace_delta_box_plot_data(
     start_time_utc,
     first_leg_gate_pos,
 ) -> Optional[PaceDeltaBoxPlotData]:
-    """Compute shared inputs for pace delta box plots, or return None when unavailable."""
+    """
+    Prepare all pace-delta structures required for plotting.
+
+    Returns None when required prerequisites are missing.
+    """
     # Reuse the same pace delta samples for both pace plot variants.
     track_progress_by_track, pace_delta_by_track = compute_pace_delta_samples(
         tracks, speed_window_stats
@@ -1309,7 +1344,12 @@ def plot_pace_delta_box_plot(
     export_dir=None,
     export_and_close=False,
 ):
-    """Plot pace-delta box plots per leg using precomputed inputs."""
+    """
+    Export one pace-delta figure per leg (boats on x-axis).
+
+    Sorting:
+    - Lower pace delta is better, so ordering is ascending by leg mean.
+    """
     if pace_plot_data is None:
         return
 
@@ -1421,7 +1461,11 @@ def plot_pace_delta_box_plot_by_boat(
     export_dir=None,
     export_and_close=False,
 ):
-    """Plot pace-delta box plots per boat using precomputed inputs."""
+    """
+    Export one pace-delta figure per boat (legs on x-axis).
+
+    These plots are typically used in the "Boat summaries" section of the report.
+    """
     if pace_plot_data is None:
         return
 
@@ -1531,6 +1575,9 @@ def plot_pace_delta_box_plot_by_boat(
             plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# Optional diagnostic plots
+# ---------------------------------------------------------------------------
 def plot_speed_range_along_route(
     tracks,
     speed_window_stats,
@@ -1539,7 +1586,12 @@ def plot_speed_range_along_route(
     export_path=None,
     export_and_close=False,
 ):
-    """Debug plot of speed vs progress with min/max/mean envelope."""
+    """
+    Diagnostic plot: all boats' smoothed speed vs progress + fleet envelope.
+
+    This is not part of the default report flow; it's a sanity/analysis aid to
+    inspect baseline construction quality.
+    """
     if not speed_window_stats or speed_window_stats.get("routeSampleCount", 0) < 2:
         return
 
@@ -1564,7 +1616,9 @@ def plot_speed_range_along_route(
     default_color = plt.cm.hsv(np.linspace(0, 1, max(len(tracks), 1)))
     for idx, track in enumerate(tracks):
         # Resample on the same grid as the window stats to compare with the envelope.
-        speed_on_grid = resample_track_speed(track, window_progress, route_sample_count, filter_alpha)
+        speed_on_grid = sph.resample_track_speed(
+            track, window_progress, route_sample_count, filter_alpha
+        )
         if speed_on_grid is None:
             continue
         line_color = track["color"] or default_color[idx]
@@ -1576,7 +1630,7 @@ def plot_speed_range_along_route(
     if mean_speed.size:
         ax.plot(window_progress, mean_speed, "k-", linewidth=1.5, label="Mean speed")
 
-    apply_waypoint_ticks(ax, waypoint_progress, waypoint_names)
+    sph.apply_waypoint_ticks(ax, waypoint_progress, waypoint_names)
 
     ax.set_xlabel(r"$\mathrm{Progress}\,[-]$")
     ax.set_ylabel(r"$\mathrm{Speed}\,[\mathrm{kn}]$")
@@ -1589,49 +1643,6 @@ def plot_speed_range_along_route(
         save_figure(fig, export_path)
     if export_and_close:
         plt.close(fig)
-
-
-def plot_coast_geojson_cropped(ax, tracks, geojson_file, margin_deg):
-    """Plot coastline lines from a GeoJSON, cropped to tracks bbox."""
-    if not Path(geojson_file).is_file():
-        return
-
-    # Use the track bounds to crop the coastline and avoid drawing irrelevant geometry.
-    all_lat = np.concatenate([track["lat"] for track in tracks if track["lat"].size])
-    all_lon = np.concatenate([track["lon"] for track in tracks if track["lon"].size])
-    finite_mask = np.isfinite(all_lat) & np.isfinite(all_lon)
-    if not finite_mask.any():
-        return
-
-    all_lat = all_lat[finite_mask]
-    all_lon = all_lon[finite_mask]
-
-    min_lat = float(np.min(all_lat) - margin_deg)
-    max_lat = float(np.max(all_lat) + margin_deg)
-    min_lon = float(np.min(all_lon) - margin_deg)
-    max_lon = float(np.max(all_lon) + margin_deg)
-
-    with open(geojson_file, encoding="utf-8") as handle:
-        geojson_data = json.load(handle)
-
-    features = geojson_data.get("features", [])
-    for feature in features:
-        geometry = feature.get("geometry")
-        if not geometry:
-            continue
-        line_strings = sh.geojson_geometry_to_lines(geometry)
-        for line in line_strings:
-            if line.size == 0:
-                continue
-            # Mask points outside the bounding box instead of clipping geometry in-place.
-            lon = line[:, 0]
-            lat = line[:, 1]
-            inside = (lat >= min_lat) & (lat <= max_lat) & (lon >= min_lon) & (lon <= max_lon)
-            lon = lon.astype(float)
-            lat = lat.astype(float)
-            lon[~inside] = np.nan
-            lat[~inside] = np.nan
-            ax.plot(lon, lat, color=(0.35, 0.35, 0.35), linewidth=1.0)
 
 
 if __name__ == "__main__":
