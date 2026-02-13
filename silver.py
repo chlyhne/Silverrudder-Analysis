@@ -1,4 +1,3 @@
-import argparse
 import json
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional
@@ -94,33 +93,6 @@ FIGURE_PROFILES = {
 }
 ACTIVE_FIGURE_PROFILE = FIGURE_PROFILES["desktop"]
 
-
-def parse_cli_args():
-    """Parse command-line options for figure export profiles."""
-    parser = argparse.ArgumentParser(
-        description="Generate Silverrudder analysis figures."
-    )
-    parser.add_argument(
-        "--figure-profile",
-        choices=("desktop", "phone", "both"),
-        default="both",
-        help="Figure style/export target to generate.",
-    )
-    parser.add_argument(
-        "--figure-root",
-        default=str(Path("documentation") / "figures"),
-        help="Root output folder for exported figures.",
-    )
-    return parser.parse_args()
-
-
-def resolve_figure_profiles(profile_name):
-    """Return ordered figure profiles to export."""
-    if profile_name == "both":
-        return [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
-    return [FIGURE_PROFILES[profile_name]]
-
-
 def set_active_figure_profile(profile):
     """Set active profile used by plot helpers for marker/text sizing."""
     global ACTIVE_FIGURE_PROFILE
@@ -159,8 +131,6 @@ def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom
 
 
 def main():
-    args = parse_cli_args()
-
     # End-to-end pipeline: load metadata and tracks, align samples to a reference route,
     # compute per-window baseline stats, then prepare plot-ready data for the chosen outputs.
     data_root = Path("data") / "silverrudder_2025"
@@ -218,7 +188,7 @@ def main():
 
     # When enabled, figures are saved to PDF and immediately closed to limit memory use.
     export_and_close_figures = True
-    figure_output_root = Path(args.figure_root)
+    figure_output_root = Path("documentation") / "figures"
     # Disable interactive display when exporting so figures do not pop up during batch runs.
     if export_and_close_figures:
         plt.ioff()
@@ -257,7 +227,7 @@ def main():
             first_leg_gate_pos,
         )
 
-    figure_profiles = resolve_figure_profiles(args.figure_profile)
+    figure_profiles = [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
     for figure_profile in figure_profiles:
         set_active_figure_profile(figure_profile)
         export_dir = (
