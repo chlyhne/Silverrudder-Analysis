@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Computer Modern Roman"]
@@ -64,7 +65,11 @@ BOX_PLOT_STYLE_SPEED = BOX_PLOT_STYLE_COMMON
 BOX_PLOT_AXIS_STYLE_SPEED = BOX_PLOT_AXIS_STYLE_COMMON
 BOX_PLOT_STYLE_PACE = BOX_PLOT_STYLE_COMMON
 BOX_PLOT_AXIS_STYLE_PACE = replace(BOX_PLOT_AXIS_STYLE_COMMON, major_tick=2.0)
-BOX_PLOT_WHISKER_SCALE = 1.5
+# Distribution bounds policy used for both y-scaling and violin clipping.
+DELTA_RANGE_LOWER_PERCENTILE = 0.0
+DELTA_RANGE_UPPER_PERCENTILE = 100.0
+# Hard upper cap for pace delta plots [min/NM].
+PACE_DELTA_UPPER_CAP = 10.0
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,6 @@ class FigureProfile:
     output_subdir: str
     rc_params: Dict[str, object]
     waypoint_label_fontsize: float
-    scalar_marker_size: float
     pace_units_per_inch_factor: float
     speed_units_per_inch_factor: float
     boxplot_top_margin_in: float
@@ -107,9 +111,8 @@ FIGURE_PROFILES = {
             "legend.fontsize": 11.0,
         },
         waypoint_label_fontsize=9.0,
-        scalar_marker_size=6.0,
-        pace_units_per_inch_factor=1.10,
-        speed_units_per_inch_factor=0.95,
+        pace_units_per_inch_factor=0.8,
+        speed_units_per_inch_factor=1.5,
         boxplot_top_margin_in=0.30,
         boxplot_bottom_margin_in=0.95,
         boxplot_left_margin_in=0.75,
@@ -129,7 +132,6 @@ FIGURE_PROFILES = {
             "legend.fontsize": 11.0,
         },
         waypoint_label_fontsize=11.0,
-        scalar_marker_size=8.0,
         pace_units_per_inch_factor=1.00,
         speed_units_per_inch_factor=1.00,
         boxplot_top_margin_in=0.30,
@@ -173,7 +175,7 @@ def save_figure(fig, output_path):
     We do not pass bbox/scale overrides here; canvas size and subplot margins
     are treated as the single source of truth for text and geometry.
     """
-    fig.savefig(output_path)
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=0.01)
 
 
 def latex_display_name(name: str) -> str:
@@ -219,6 +221,182 @@ def apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom
     bottom = bottom_in / fig_height
     top = 1.0 - (top_in / fig_height)
     fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+
+
+def draw_manual_violin_distribution(
+    ax,
+    x_position,
+    samples,
+    line_color,
+    style=None,
+    clip_lower=None,
+    clip_upper=None,
+):
+    """
+    Draw one distribution as a violin with median line and mean dot.
+
+    For a single-value sample, fall back to a point marker because density is undefined.
+    """
+    style = style or BOX_PLOT_STYLE_COMMON
+    clean_samples = prepare_violin_samples(samples, clip_lower=clip_lower, clip_upper=clip_upper)
+    if clean_samples.size == 0:
+        return
+
+    mean_value = float(np.mean(clean_samples))
+
+    if clean_samples.size == 1:
+        ax.plot(
+            x_position,
+            mean_value,
+            marker=style.mean_marker,
+            markersize=style.mean_marker_size,
+            color=line_color,
+            linestyle="None",
+        )
+        return
+
+    violin = ax.violinplot(
+        [clean_samples],
+        positions=[x_position],
+        widths=0.8,
+        showmeans=False,
+        showmedians=False,
+        showextrema=False,
+    )
+    violin_body = violin["bodies"][0]
+    violin_body.set_facecolor(line_color)
+    violin_body.set_edgecolor(line_color)
+    violin_body.set_alpha(style.box_alpha)
+    violin_body.set_linewidth(style.whisker_linewidth)
+
+    median_value = float(np.median(clean_samples))
+    median_half_width = style.box_half_width
+    ax.plot(
+        [x_position - median_half_width, x_position + median_half_width],
+        [median_value, median_value],
+        color=line_color,
+        linewidth=style.median_linewidth,
+    )
+    ax.plot(
+        x_position,
+        mean_value,
+        marker=style.mean_marker,
+        markersize=style.mean_marker_size,
+        color=line_color,
+        linestyle="None",
+    )
+
+
+def prepare_violin_samples(samples, clip_lower=None, clip_upper=None):
+    """
+    Clean and bound samples before violin rendering.
+    """
+    clean_samples = np.asarray(samples, dtype=float)
+    clean_samples = clean_samples[np.isfinite(clean_samples)]
+    if clean_samples.size == 0:
+        return clean_samples
+
+    percentile_bounds = compute_percentile_bounds(clean_samples)
+    if percentile_bounds is not None:
+        clean_samples = np.clip(clean_samples, percentile_bounds[0], percentile_bounds[1])
+    if clip_lower is not None or clip_upper is not None:
+        lower_bound = -np.inf if clip_lower is None else float(clip_lower)
+        upper_bound = np.inf if clip_upper is None else float(clip_upper)
+        clean_samples = np.clip(clean_samples, lower_bound, upper_bound)
+    return clean_samples
+
+
+def draw_split_violin_distribution(
+    ax,
+    x_position,
+    left_samples,
+    right_samples,
+    left_color,
+    right_color,
+    style=None,
+    clip_lower=None,
+    clip_upper=None,
+):
+    """
+    Draw one split violin (left/right halves) for comparing two datasets.
+    """
+    style = style or BOX_PLOT_STYLE_COMMON
+    left_clean = prepare_violin_samples(left_samples, clip_lower=clip_lower, clip_upper=clip_upper)
+    right_clean = prepare_violin_samples(right_samples, clip_lower=clip_lower, clip_upper=clip_upper)
+    if left_clean.size == 0 and right_clean.size == 0:
+        return
+
+    violin_width = 0.8
+    half_width = 0.5 * violin_width
+    mean_x_offset = 0.5 * half_width
+
+    if left_clean.size > 1:
+        left_parts = ax.violinplot(
+            [left_clean],
+            positions=[x_position],
+            widths=violin_width,
+            side="low",
+            showmeans=False,
+            showmedians=False,
+            showextrema=False,
+        )
+        left_body = left_parts["bodies"][0]
+        left_body.set_facecolor(left_color)
+        left_body.set_edgecolor(left_color)
+        left_body.set_alpha(style.box_alpha)
+        left_body.set_linewidth(style.whisker_linewidth)
+
+    if right_clean.size > 1:
+        right_parts = ax.violinplot(
+            [right_clean],
+            positions=[x_position],
+            widths=violin_width,
+            side="high",
+            showmeans=False,
+            showmedians=False,
+            showextrema=False,
+        )
+        right_body = right_parts["bodies"][0]
+        right_body.set_facecolor(right_color)
+        right_body.set_edgecolor(right_color)
+        right_body.set_alpha(style.box_alpha)
+        right_body.set_linewidth(style.whisker_linewidth)
+
+    if left_clean.size:
+        left_median = float(np.median(left_clean))
+        left_mean = float(np.mean(left_clean))
+        ax.plot(
+            [x_position - half_width, x_position],
+            [left_median, left_median],
+            color=left_color,
+            linewidth=style.median_linewidth,
+        )
+        ax.plot(
+            x_position - mean_x_offset,
+            left_mean,
+            marker=style.mean_marker,
+            markersize=style.mean_marker_size,
+            color=left_color,
+            linestyle="None",
+        )
+
+    if right_clean.size:
+        right_median = float(np.median(right_clean))
+        right_mean = float(np.mean(right_clean))
+        ax.plot(
+            [x_position, x_position + half_width],
+            [right_median, right_median],
+            color=right_color,
+            linewidth=style.median_linewidth,
+        )
+        ax.plot(
+            x_position + mean_x_offset,
+            right_mean,
+            marker=style.mean_marker,
+            markersize=style.mean_marker_size,
+            color=right_color,
+            linestyle="None",
+        )
 
 
 def main():
@@ -313,6 +491,13 @@ def main():
     show_map_plot = False
     show_pace_box_plots = True
     show_pace_box_plots_by_boat = True
+    show_pace_pair_plots = True
+    pace_pairs = [
+        ("Vera", "Mercutio"),
+        ("Julia", "Saga"),
+        ("Saga", "Samba"),
+        ("Mercutio", "My"),
+    ]
     show_speed_box_plots = True
     show_speed_box_plots_by_boat = True
     show_pace_range_plot = False
@@ -386,6 +571,15 @@ def main():
                 plot_pace_delta_box_plot_by_boat(
                     tracks,
                     pace_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
+
+            if show_pace_pair_plots:
+                plot_pace_delta_split_violin_by_pair(
+                    tracks,
+                    pace_box_plot_data,
+                    pace_pairs,
                     export_dir=export_dir,
                     export_and_close=export_and_close_figures,
                 )
@@ -485,39 +679,103 @@ def get_leg_bounds(progress_values, leg_index):
     return leg_start, leg_end
 
 
-def compute_first_leg_distance_m(average_route, progress_values):
+def compute_route_distance_m(average_route):
     """
-    Compute physical first-leg distance (meters) from route geometry + progress.
-
-    First-leg scalar pace/speed metrics use gate timing and therefore need a
-    physical distance estimate for Start -> first gate.
+    Compute total route length (meters) from rhumb-line geometry.
     """
-    if len(progress_values) < 2:
-        return np.nan
-
-    # Use the full rhumb-line length to convert fractional progress into meters.
     route_distance_m = sh.cumulative_distance_meters(
         np.asarray(average_route["lat"], dtype=float),
         np.asarray(average_route["lon"], dtype=float),
     )[-1]
     if not np.isfinite(route_distance_m) or route_distance_m <= 0:
         return np.nan
-    return abs(progress_values[1] - progress_values[0]) * route_distance_m
+    return float(route_distance_m)
 
 
-def compute_first_leg_delta(values_by_track):
+def compute_gate_leg_metric_by_track(
+    tracks,
+    start_time_utc,
+    first_leg_gate_pos,
+    progress_values,
+    average_route,
+    metric_name,
+):
     """
-    Convert raw first-leg scalar values into deltas against fleet mean.
+    Compute raw per-track per-leg metric from gate-crossing times.
 
-    The output semantics match later per-sample deltas:
-    negative pace delta = faster; positive speed delta = faster.
+    metric_name:
+    - "speed": leg_length / leg_time  [kn]
+    - "pace": leg_time / leg_length   [min/NM]
     """
-    # Center first-leg values on the fleet mean so deltas are comparable to later legs.
-    if values_by_track.size:
-        mean_value = float(np.nanmean(values_by_track))
-    else:
-        mean_value = np.nan
-    return values_by_track - mean_value
+    leg_count = len(progress_values) - 1
+    metric_by_track = np.full((len(tracks), max(0, leg_count)), np.nan, dtype=float)
+    if leg_count < 1:
+        return metric_by_track
+    if not np.isfinite(start_time_utc) or first_leg_gate_pos < 0:
+        return metric_by_track
+    if metric_name not in {"speed", "pace"}:
+        raise ValueError(f"Unsupported metric_name '{metric_name}'.")
+
+    route_distance_m = compute_route_distance_m(average_route)
+    if not np.isfinite(route_distance_m):
+        return metric_by_track
+    leg_distance_nm = np.abs(np.diff(np.asarray(progress_values, dtype=float))) * route_distance_m / 1852.0
+
+    for track_index, track in enumerate(tracks):
+        gate_times = np.asarray(track.get("gateTimes", np.array([])), dtype=float)
+        for leg_index in range(leg_count):
+            distance_nm = leg_distance_nm[leg_index]
+            if not np.isfinite(distance_nm) or distance_nm <= 0:
+                continue
+
+            if leg_index == 0:
+                if gate_times.size <= first_leg_gate_pos:
+                    continue
+                leg_start_time = start_time_utc
+                leg_end_time = gate_times[first_leg_gate_pos]
+            else:
+                gate_start_index = first_leg_gate_pos + leg_index - 1
+                gate_end_index = first_leg_gate_pos + leg_index
+                if gate_times.size <= gate_end_index:
+                    continue
+                leg_start_time = gate_times[gate_start_index]
+                leg_end_time = gate_times[gate_end_index]
+
+            if not np.isfinite(leg_start_time) or not np.isfinite(leg_end_time):
+                continue
+            if leg_end_time <= leg_start_time:
+                continue
+
+            leg_time_hours = (leg_end_time - leg_start_time) / 3600.0
+            if leg_time_hours <= 0:
+                continue
+
+            if metric_name == "speed":
+                metric_by_track[track_index, leg_index] = distance_nm / leg_time_hours
+            else:
+                leg_time_min = leg_time_hours * 60.0
+                metric_by_track[track_index, leg_index] = leg_time_min / distance_nm
+
+    return metric_by_track
+
+
+def compute_leg_delta_by_track(raw_leg_metric_by_track):
+    """
+    Center raw per-leg metric values on fleet mean per leg.
+    """
+    delta_by_track = np.full_like(raw_leg_metric_by_track, np.nan, dtype=float)
+    if raw_leg_metric_by_track.ndim != 2:
+        return delta_by_track
+
+    for leg_index in range(raw_leg_metric_by_track.shape[1]):
+        leg_values = raw_leg_metric_by_track[:, leg_index]
+        finite_values = leg_values[np.isfinite(leg_values)]
+        if finite_values.size == 0:
+            continue
+        fleet_mean = float(np.mean(finite_values))
+        delta_by_track[:, leg_index] = leg_values - fleet_mean
+
+    return delta_by_track
 
 
 def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index, first_leg_value):
@@ -549,7 +807,15 @@ def get_leg_samples_for_track(progress, delta_values, progress_values, leg_index
     return leg_samples
 
 
-def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, leg_index, first_leg_delta_by_track):
+def build_leg_ordered(
+    track_progress_by_track,
+    delta_by_track,
+    progress_values,
+    leg_index,
+    first_leg_delta_by_track,
+    clip_lower=None,
+    clip_upper=None,
+):
     """
     Collect + rank tracks by leg mean delta.
 
@@ -567,32 +833,82 @@ def build_leg_ordered(track_progress_by_track, delta_by_track, progress_values, 
         )
         if leg_samples is None:
             continue
-        leg_ordered.append((track_index, float(np.mean(leg_samples)), leg_samples))
+        display_samples = prepare_violin_samples(
+            leg_samples, clip_lower=clip_lower, clip_upper=clip_upper
+        )
+        if display_samples.size == 0:
+            continue
+        leg_mean = float(np.mean(display_samples))
+        if clip_lower is not None or clip_upper is not None:
+            lower_bound = -np.inf if clip_lower is None else float(clip_lower)
+            upper_bound = np.inf if clip_upper is None else float(clip_upper)
+            leg_mean = float(np.clip(leg_mean, lower_bound, upper_bound))
+        leg_ordered.append((track_index, leg_mean, leg_samples))
     return leg_ordered
+
+
+def compute_percentile_bounds(samples, lower_percentile=DELTA_RANGE_LOWER_PERCENTILE, upper_percentile=DELTA_RANGE_UPPER_PERCENTILE):
+    """
+    Compute inclusive percentile bounds for one sample vector.
+
+    Returns None when samples contain no finite values.
+    """
+    clean_samples = np.asarray(samples, dtype=float)
+    clean_samples = clean_samples[np.isfinite(clean_samples)]
+    if clean_samples.size == 0:
+        return None
+    lower_value = float(np.percentile(clean_samples, lower_percentile))
+    upper_value = float(np.percentile(clean_samples, upper_percentile))
+    if not np.isfinite(lower_value) or not np.isfinite(upper_value):
+        return None
+    if lower_value > upper_value:
+        lower_value, upper_value = upper_value, lower_value
+    return lower_value, upper_value
+
+
+def update_percentile_range(current_lower, current_upper, samples):
+    """
+    Expand a (lower, upper) range using configured percentile bounds.
+    """
+    bounds = compute_percentile_bounds(samples)
+    if bounds is None:
+        return current_lower, current_upper
+    return min(current_lower, bounds[0]), max(current_upper, bounds[1])
+
+
+def clamp_range_bounds(lower_value, upper_value, clip_lower=None, clip_upper=None):
+    """
+    Clamp range endpoints to optional hard bounds and keep ordering valid.
+    """
+    lower = float(lower_value)
+    upper = float(upper_value)
+    if clip_lower is not None or clip_upper is not None:
+        lower_bound = -np.inf if clip_lower is None else float(clip_lower)
+        upper_bound = np.inf if clip_upper is None else float(clip_upper)
+        lower = float(np.clip(lower, lower_bound, upper_bound))
+        upper = float(np.clip(upper, lower_bound, upper_bound))
+    if upper < lower:
+        upper = lower
+    return lower, upper
 
 
 def compute_track_robust_delta_range(progress, delta_values, progress_values, first_leg_value):
     """
     Compute a single track's robust min/max delta range across all legs.
 
-    "Robust" here means Tukey-style whisker bounds via `update_whisker_range`,
-    which are less sensitive to extreme outliers than raw min/max.
+    "Robust" here means percentile bounds (1st/99th) per leg, aggregated
+    across legs for the track.
     """
     local_lower = np.inf
     local_upper = -np.inf
-    # Aggregate whisker bounds across all legs to keep per-boat y-scales consistent.
+    # Aggregate percentile bounds across all legs to keep per-boat y-scales consistent.
     for leg_index in range(len(progress_values) - 1):
         leg_samples = get_leg_samples_for_track(
             progress, delta_values, progress_values, leg_index, first_leg_value
         )
         if leg_samples is None:
             continue
-        local_lower, local_upper = box_plots.update_whisker_range(
-            local_lower,
-            local_upper,
-            leg_samples,
-            whisker_scale=BOX_PLOT_WHISKER_SCALE,
-        )
+        local_lower, local_upper = update_percentile_range(local_lower, local_upper, leg_samples)
     if not np.isfinite(local_lower) or not np.isfinite(local_upper):
         return None
     return local_lower, local_upper
@@ -608,7 +924,7 @@ def compute_leg_robust_delta_range_across_tracks(
     """
     Compute robust min/max delta range for one leg across all tracks.
 
-    Uses the same Tukey-style whisker bound method as
+    Uses the same percentile-bound method as
     `compute_track_robust_delta_range` for consistency.
     """
     local_lower = np.inf
@@ -622,12 +938,7 @@ def compute_leg_robust_delta_range_across_tracks(
         )
         if leg_samples is None:
             continue
-        local_lower, local_upper = box_plots.update_whisker_range(
-            local_lower,
-            local_upper,
-            leg_samples,
-            whisker_scale=BOX_PLOT_WHISKER_SCALE,
-        )
+        local_lower, local_upper = update_percentile_range(local_lower, local_upper, leg_samples)
     if not np.isfinite(local_lower) or not np.isfinite(local_upper):
         return None
     return local_lower, local_upper
@@ -639,6 +950,8 @@ def compute_metric_scale_context(
     progress_values,
     first_leg_delta_by_track,
     units_per_inch_factor=1.0,
+    clip_lower=None,
+    clip_upper=None,
 ):
     """
     Build metric-wide scaling context for physically comparable plots.
@@ -663,8 +976,11 @@ def compute_metric_scale_context(
         )
         if leg_range is None:
             continue
-        global_lower = min(global_lower, leg_range[0])
-        global_upper = max(global_upper, leg_range[1])
+        clipped_lower, clipped_upper = clamp_range_bounds(
+            leg_range[0], leg_range[1], clip_lower=clip_lower, clip_upper=clip_upper
+        )
+        global_lower = min(global_lower, clipped_lower)
+        global_upper = max(global_upper, clipped_upper)
 
     global_range_result = box_plots.compute_global_plot_range(global_lower, global_upper)
     if global_range_result is None:
@@ -673,6 +989,28 @@ def compute_metric_scale_context(
     units_per_inch = box_plots.compute_units_per_inch(global_range)
     units_per_inch *= units_per_inch_factor
     return global_lower, global_upper, global_range, units_per_inch
+
+
+def expand_y_limits_by_subticks(local_lower, local_upper, axis_style, subticks_each_side=2):
+    """
+    Expand y-limits by a fixed number of minor y-tick intervals on each side.
+
+    This adds consistent visual headroom independent of data spread.
+    """
+    if not np.isfinite(local_lower) or not np.isfinite(local_upper):
+        return local_lower, local_upper, local_upper - local_lower
+
+    major_tick = float(getattr(axis_style, "major_tick", 0.0))
+    minor_ticks_per_major = int(getattr(axis_style, "minor_ticks_per_major", 0))
+    if major_tick <= 0:
+        return local_lower, local_upper, local_upper - local_lower
+
+    # Minor ticks are placed at major_tick / (minor_ticks_per_major + 1).
+    minor_step = major_tick / max(1, minor_ticks_per_major + 1)
+    padding = float(subticks_each_side) * minor_step
+    local_lower -= padding
+    local_upper += padding
+    return local_lower, local_upper, local_upper - local_lower
 
 
 def plot_colored_tracks(
@@ -792,13 +1130,16 @@ def prepare_speed_delta_box_plot_data(
 
     leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
-    # First-leg averages are gate-based, so compute them separately from route-window deltas.
-    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
-    first_leg_speed_by_track = compute_first_leg_speed_by_track(
-        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
+    # First-leg scalar comes from gate-time leg speed.
+    raw_leg_speed_by_track = compute_gate_leg_metric_by_track(
+        tracks,
+        start_time_utc,
+        first_leg_gate_pos,
+        progress_values,
+        average_route,
+        metric_name="speed",
     )
-    first_leg_delta_by_track = compute_first_leg_delta(first_leg_speed_by_track)
-
+    first_leg_delta_by_track = compute_leg_delta_by_track(raw_leg_speed_by_track)[:, 0]
     return SpeedDeltaBoxPlotData(
         track_progress_by_track=track_progress_by_track,
         speed_delta_by_track=speed_delta_by_track,
@@ -855,10 +1196,13 @@ def plot_speed_delta_box_plot(
         local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
             leg_range[0], leg_range[1], global_range
         )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_SPEED, subticks_each_side=2
+        )
 
         fig, ax = plt.subplots()
         prepare_figure(fig, export_and_close=export_and_close)
-        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.15)
+        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0)
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
         ax.set_ylim(local_lower, local_upper)
 
@@ -885,26 +1229,13 @@ def plot_speed_delta_box_plot(
         leg_ordered.sort(key=lambda item: item[1], reverse=True)
         for plot_index, (track_index, _, speed_leg) in enumerate(leg_ordered, start=1):
             line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
-            if leg_index == 0:
-                # First leg is a single scalar delta, plotted as a point.
-                ax.plot(
-                    plot_index,
-                    speed_leg,
-                    marker="o",
-                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
-                    color=line_color,
-                    linestyle="None",
-                )
-            else:
-                # Later legs have enough samples for a box plot.
-                box_plots.draw_manual_box_plot(
-                    ax,
-                    plot_index,
-                    speed_leg,
-                    line_color,
-                    style=BOX_PLOT_STYLE_SPEED,
-                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
-                )
+            draw_manual_violin_distribution(
+                ax,
+                plot_index,
+                speed_leg,
+                line_color,
+                style=BOX_PLOT_STYLE_SPEED,
+            )
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
@@ -974,6 +1305,9 @@ def plot_speed_delta_box_plot_by_boat(
         local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
             leg_range[0], leg_range[1], global_range
         )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_SPEED, subticks_each_side=2
+        )
 
         fig, ax = plt.subplots()
         prepare_figure(fig, export_and_close=export_and_close)
@@ -1003,26 +1337,13 @@ def plot_speed_delta_box_plot_by_boat(
             )
             if speed_leg is None:
                 continue
-            if leg_index == 0:
-                # First leg is a scalar delta, so plot a single point.
-                ax.plot(
-                    leg_index + 1,
-                    speed_leg,
-                    marker="o",
-                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
-                    color=line_color,
-                    linestyle="None",
-                )
-            else:
-                # Later legs use the full box plot to show variability.
-                box_plots.draw_manual_box_plot(
-                    ax,
-                    leg_index + 1,
-                    speed_leg,
-                    line_color,
-                    style=BOX_PLOT_STYLE_SPEED,
-                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
-                )
+            draw_manual_violin_distribution(
+                ax,
+                leg_index + 1,
+                speed_leg,
+                line_color,
+                style=BOX_PLOT_STYLE_SPEED,
+            )
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(
@@ -1130,45 +1451,6 @@ def compute_speed_delta_samples(tracks, speed_window_stats):
     return track_progress_by_track, speed_delta_by_track
 
 
-def compute_first_leg_speed_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
-    """
-    Compute first-leg average speed (kn) from Start -> first gate crossing.
-
-    This first leg is treated specially because route-window samples can be
-    sparse/noisy during starts; gate-time based scalar is more stable here.
-    """
-    speed_values = []
-    # First-leg speed depends on start time and gate crossing times; bail out if missing.
-    if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
-        return np.full(len(tracks), np.nan, dtype=float)
-
-    # Convert meters to nautical miles to keep speed in knots.
-    leg_distance_nm = first_leg_distance_m / 1852.0
-    if leg_distance_nm <= 0:
-        return np.full(len(tracks), np.nan, dtype=float)
-
-    for track in tracks:
-        gate_times = track.get("gateTimes", np.array([]))
-        if gate_times is None or len(gate_times) <= first_leg_gate_pos:
-            speed_values.append(np.nan)
-            continue
-
-        finish_time = gate_times[first_leg_gate_pos]
-        if not np.isfinite(finish_time) or finish_time <= start_time_utc:
-            speed_values.append(np.nan)
-            continue
-
-        leg_time_hours = (finish_time - start_time_utc) / 3600.0
-        if leg_time_hours <= 0:
-            speed_values.append(np.nan)
-            continue
-
-        speed_knots = leg_distance_nm / leg_time_hours
-        speed_values.append(speed_knots)
-
-    return np.asarray(speed_values, dtype=float)
-
-
 def compute_pace_delta_samples(tracks, speed_window_stats):
     """
     Build per-track pace delta samples against fleet baseline pace.
@@ -1259,41 +1541,6 @@ def compute_pace_delta_samples(tracks, speed_window_stats):
     return track_progress_by_track, pace_delta_by_track
 
 
-def compute_first_leg_pace_by_track(tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m):
-    """
-    Compute first-leg pace (min/NM) from Start -> first gate crossing.
-
-    Same philosophy as first-leg speed helper: use gate timing to avoid
-    start-area sampling artifacts.
-    """
-    pace_values = []
-    # First-leg pace depends on the race start time and gate crossing time.
-    if not np.isfinite(start_time_utc) or first_leg_distance_m <= 0:
-        return np.full(len(tracks), np.nan, dtype=float)
-
-    # Use nautical miles to keep pace in minutes per NM.
-    leg_distance_nm = first_leg_distance_m / 1852.0
-    if leg_distance_nm <= 0:
-        return np.full(len(tracks), np.nan, dtype=float)
-
-    for track in tracks:
-        gate_times = track.get("gateTimes", np.array([]))
-        if gate_times is None or len(gate_times) <= first_leg_gate_pos:
-            pace_values.append(np.nan)
-            continue
-
-        finish_time = gate_times[first_leg_gate_pos]
-        if not np.isfinite(finish_time) or finish_time <= start_time_utc:
-            pace_values.append(np.nan)
-            continue
-
-        leg_time_sec = finish_time - start_time_utc
-        pace_min_per_nm = (leg_time_sec / 60.0) / leg_distance_nm
-        pace_values.append(pace_min_per_nm)
-
-    return np.asarray(pace_values, dtype=float)
-
-
 @dataclass(frozen=True)
 class PaceDeltaBoxPlotData:
     """
@@ -1338,13 +1585,16 @@ def prepare_pace_delta_box_plot_data(
 
     leg_labels = build_leg_labels(progress_values, waypoint_labels)
 
-    # First-leg pace comes from start-to-gate timing, not route-window samples.
-    first_leg_distance_m = compute_first_leg_distance_m(average_route, progress_values)
-    first_leg_pace_by_track = compute_first_leg_pace_by_track(
-        tracks, start_time_utc, first_leg_gate_pos, first_leg_distance_m
+    # First-leg scalar comes from gate-time leg pace.
+    raw_leg_pace_by_track = compute_gate_leg_metric_by_track(
+        tracks,
+        start_time_utc,
+        first_leg_gate_pos,
+        progress_values,
+        average_route,
+        metric_name="pace",
     )
-    first_leg_delta_by_track = compute_first_leg_delta(first_leg_pace_by_track)
-
+    first_leg_delta_by_track = compute_leg_delta_by_track(raw_leg_pace_by_track)[:, 0]
     return PaceDeltaBoxPlotData(
         track_progress_by_track=track_progress_by_track,
         pace_delta_by_track=pace_delta_by_track,
@@ -1383,6 +1633,7 @@ def plot_pace_delta_box_plot(
         progress_values,
         first_leg_delta_by_track,
         units_per_inch_factor=ACTIVE_FIGURE_PROFILE.pace_units_per_inch_factor,
+        clip_upper=PACE_DELTA_UPPER_CAP,
     )
     if scale_context is None:
         return
@@ -1398,13 +1649,26 @@ def plot_pace_delta_box_plot(
         )
         if leg_range is None:
             leg_range = (global_lower, global_upper)
-        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
-            leg_range[0], leg_range[1], global_range
+        leg_lower, leg_upper = clamp_range_bounds(
+            leg_range[0], leg_range[1], clip_upper=PACE_DELTA_UPPER_CAP
         )
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            leg_lower, leg_upper, global_range
+        )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_PACE, subticks_each_side=2
+        )
+        local_lower, local_upper = clamp_range_bounds(
+            local_lower, local_upper, clip_upper=PACE_DELTA_UPPER_CAP
+        )
+        local_range = local_upper - local_lower
+        if local_range <= 0:
+            local_range = 1.0
+            local_lower = local_upper - local_range
 
         fig, ax = plt.subplots()
         prepare_figure(fig, export_and_close=export_and_close)
-        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.15)
+        apply_boxplot_physical_layout(fig, local_range, units_per_inch, extra_bottom_in=0.0)
         box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
         ax.set_ylim(local_lower, local_upper)
 
@@ -1415,6 +1679,7 @@ def plot_pace_delta_box_plot(
             progress_values,
             leg_index,
             first_leg_delta_by_track,
+            clip_upper=PACE_DELTA_UPPER_CAP,
         )
         if not leg_ordered:
             ax.set_title(leg_labels[leg_index])
@@ -1430,26 +1695,14 @@ def plot_pace_delta_box_plot(
         leg_ordered.sort(key=lambda item: item[1])
         for plot_index, (track_index, _, pace_leg) in enumerate(leg_ordered, start=1):
             line_color = tracks[track_index]["color"] or (0.3, 0.3, 0.3)
-            if leg_index == 0:
-                # First leg is a single scalar delta, plotted as a point.
-                ax.plot(
-                    plot_index,
-                    pace_leg,
-                    marker="o",
-                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
-                    color=line_color,
-                    linestyle="None",
-                )
-            else:
-                # Later legs use full box plots to show spread.
-                box_plots.draw_manual_box_plot(
-                    ax,
-                    plot_index,
-                    pace_leg,
-                    line_color,
-                    style=BOX_PLOT_STYLE_PACE,
-                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
-                )
+            draw_manual_violin_distribution(
+                ax,
+                plot_index,
+                pace_leg,
+                line_color,
+                style=BOX_PLOT_STYLE_PACE,
+                clip_upper=PACE_DELTA_UPPER_CAP,
+            )
 
         ax.set_xticks(range(1, len(leg_ordered) + 1))
         ax.set_xticklabels(
@@ -1499,6 +1752,7 @@ def plot_pace_delta_box_plot_by_boat(
         progress_values,
         first_leg_delta_by_track,
         units_per_inch_factor=ACTIVE_FIGURE_PROFILE.pace_units_per_inch_factor,
+        clip_upper=PACE_DELTA_UPPER_CAP,
     )
     if scale_context is None:
         return
@@ -1515,9 +1769,22 @@ def plot_pace_delta_box_plot_by_boat(
         )
         if leg_range is None:
             continue
-        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
-            leg_range[0], leg_range[1], global_range
+        leg_lower, leg_upper = clamp_range_bounds(
+            leg_range[0], leg_range[1], clip_upper=PACE_DELTA_UPPER_CAP
         )
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            leg_lower, leg_upper, global_range
+        )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_PACE, subticks_each_side=2
+        )
+        local_lower, local_upper = clamp_range_bounds(
+            local_lower, local_upper, clip_upper=PACE_DELTA_UPPER_CAP
+        )
+        local_range = local_upper - local_lower
+        if local_range <= 0:
+            local_range = 1.0
+            local_lower = local_upper - local_range
 
         fig, ax = plt.subplots()
         prepare_figure(fig, export_and_close=export_and_close)
@@ -1547,26 +1814,14 @@ def plot_pace_delta_box_plot_by_boat(
             )
             if pace_leg is None:
                 continue
-            if leg_index == 0:
-                # First leg uses a single scalar delta.
-                ax.plot(
-                    leg_index + 1,
-                    pace_leg,
-                    marker="o",
-                    markersize=ACTIVE_FIGURE_PROFILE.scalar_marker_size,
-                    color=line_color,
-                    linestyle="None",
-                )
-            else:
-                # Later legs use a box plot to show distribution.
-                box_plots.draw_manual_box_plot(
-                    ax,
-                    leg_index + 1,
-                    pace_leg,
-                    line_color,
-                    style=BOX_PLOT_STYLE_PACE,
-                    whisker_scale=BOX_PLOT_WHISKER_SCALE,
-                )
+            draw_manual_violin_distribution(
+                ax,
+                leg_index + 1,
+                pace_leg,
+                line_color,
+                style=BOX_PLOT_STYLE_PACE,
+                clip_upper=PACE_DELTA_UPPER_CAP,
+            )
 
         ax.set_xticks(range(1, leg_count + 1))
         ax.set_xticklabels(
@@ -1586,6 +1841,191 @@ def plot_pace_delta_box_plot_by_boat(
             export_dir.mkdir(parents=True, exist_ok=True)
             safe_name = sh.sanitize_filename_label(track.get("name", f"boat-{track_index + 1}"))
             output_path = export_dir / f"pace-delta-boat-{safe_name}.pdf"
+            save_figure(fig, output_path)
+        if export_and_close:
+            plt.close(fig)
+
+
+def find_track_index_by_name(tracks, target_name):
+    """
+    Resolve a boat index by case-insensitive display name.
+    """
+    target_normalized = str(target_name).strip().lower()
+    for track_index, track in enumerate(tracks):
+        track_name = str(track.get("name", "")).strip().lower()
+        if track_name == target_normalized:
+            return track_index
+    return None
+
+
+def plot_pace_delta_split_violin_by_pair(
+    tracks,
+    pace_plot_data: Optional[PaceDeltaBoxPlotData],
+    pair_names: Optional[List[tuple[str, str]]] = None,
+    export_dir=None,
+    export_and_close=False,
+):
+    """
+    Export one pace-only split-violin figure per selected boat pair.
+
+    Each figure compares two boats across all legs:
+    - left half: first boat in pair
+    - right half: second boat in pair
+    """
+    if pace_plot_data is None:
+        return
+    if not pair_names:
+        return
+
+    track_progress_by_track = pace_plot_data.track_progress_by_track
+    pace_delta_by_track = pace_plot_data.pace_delta_by_track
+    progress_values = pace_plot_data.progress_values
+    leg_labels = pace_plot_data.leg_labels
+    first_leg_delta_by_track = pace_plot_data.first_leg_delta_by_track
+    leg_count = len(progress_values) - 1
+    if leg_count < 1:
+        return
+
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        pace_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.pace_units_per_inch_factor,
+        clip_upper=PACE_DELTA_UPPER_CAP,
+    )
+    if scale_context is None:
+        return
+    _, _, global_range, units_per_inch = scale_context
+
+    for left_name, right_name in pair_names:
+        left_index = find_track_index_by_name(tracks, left_name)
+        right_index = find_track_index_by_name(tracks, right_name)
+        if left_index is None or right_index is None:
+            continue
+
+        pair_lower = np.inf
+        pair_upper = -np.inf
+        for track_index in (left_index, right_index):
+            track_range = compute_track_robust_delta_range(
+                track_progress_by_track[track_index],
+                pace_delta_by_track[track_index],
+                progress_values,
+                first_leg_delta_by_track[track_index],
+            )
+            if track_range is None:
+                continue
+            range_lower, range_upper = clamp_range_bounds(
+                track_range[0], track_range[1], clip_upper=PACE_DELTA_UPPER_CAP
+            )
+            pair_lower = min(pair_lower, range_lower)
+            pair_upper = max(pair_upper, range_upper)
+        if not np.isfinite(pair_lower) or not np.isfinite(pair_upper):
+            continue
+
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            pair_lower, pair_upper, global_range
+        )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_PACE, subticks_each_side=2
+        )
+        local_lower, local_upper = clamp_range_bounds(
+            local_lower, local_upper, clip_upper=PACE_DELTA_UPPER_CAP
+        )
+        local_range = local_upper - local_lower
+        if local_range <= 0:
+            local_range = 1.0
+            local_lower = local_upper - local_range
+
+        fig, ax = plt.subplots()
+        prepare_figure(fig, export_and_close=export_and_close)
+        pair_tick_extra_bottom_in = 0.40
+        pair_tick_edge_padding = 0.70
+        if ACTIVE_FIGURE_PROFILE.name == "phone":
+            pair_tick_extra_bottom_in = 0.75
+            pair_tick_edge_padding = 0.85
+        apply_boxplot_physical_layout(
+            fig,
+            local_range,
+            units_per_inch,
+            extra_bottom_in=pair_tick_extra_bottom_in,
+        )
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_PACE)
+        ax.set_ylim(local_lower, local_upper)
+
+        left_color = tracks[left_index].get("color") or (0.3, 0.3, 0.3)
+        right_color = tracks[right_index].get("color") or (0.3, 0.3, 0.3)
+        left_progress = track_progress_by_track[left_index]
+        left_delta = pace_delta_by_track[left_index]
+        right_progress = track_progress_by_track[right_index]
+        right_delta = pace_delta_by_track[right_index]
+        left_first_leg = first_leg_delta_by_track[left_index]
+        right_first_leg = first_leg_delta_by_track[right_index]
+
+        for leg_index in range(leg_count):
+            left_leg = get_leg_samples_for_track(
+                left_progress,
+                left_delta,
+                progress_values,
+                leg_index,
+                left_first_leg,
+            )
+            right_leg = get_leg_samples_for_track(
+                right_progress,
+                right_delta,
+                progress_values,
+                leg_index,
+                right_first_leg,
+            )
+            if left_leg is None and right_leg is None:
+                continue
+
+            draw_split_violin_distribution(
+                ax,
+                leg_index + 1,
+                [] if left_leg is None else left_leg,
+                [] if right_leg is None else right_leg,
+                left_color,
+                right_color,
+                style=BOX_PLOT_STYLE_PACE,
+                clip_upper=PACE_DELTA_UPPER_CAP,
+            )
+
+        ax.set_xticks(range(1, leg_count + 1))
+        ax.set_xticklabels(
+            leg_labels,
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
+        )
+        ax.set_xlim(1.0 - pair_tick_edge_padding, leg_count + pair_tick_edge_padding)
+        ax.set_ylabel(r"$\Delta \mathrm{Pace}\,[\mathrm{min}\,\mathrm{NM}^{-1}]$")
+        ax.set_ylim(local_lower, local_upper)
+        left_title = latex_display_name(tracks[left_index].get("name", left_name))
+        right_title = latex_display_name(tracks[right_index].get("name", right_name))
+        ax.set_title(f"{left_title} vs {right_title}")
+        legend_handles = [
+            mpatches.Patch(
+                facecolor=left_color,
+                edgecolor=left_color,
+                alpha=BOX_PLOT_STYLE_PACE.box_alpha,
+                label=left_title,
+            ),
+            mpatches.Patch(
+                facecolor=right_color,
+                edgecolor=right_color,
+                alpha=BOX_PLOT_STYLE_PACE.box_alpha,
+                label=right_title,
+            ),
+        ]
+        ax.legend(handles=legend_handles, loc="upper right")
+
+        if export_dir is not None:
+            export_dir.mkdir(parents=True, exist_ok=True)
+            safe_left = sh.sanitize_filename_label(tracks[left_index].get("name", left_name))
+            safe_right = sh.sanitize_filename_label(tracks[right_index].get("name", right_name))
+            output_path = export_dir / f"pace-delta-pair-{safe_left}-vs-{safe_right}.pdf"
             save_figure(fig, output_path)
         if export_and_close:
             plt.close(fig)
@@ -1669,5 +2109,3 @@ def plot_speed_range_along_route(
 
 if __name__ == "__main__":
     main()
-
-
