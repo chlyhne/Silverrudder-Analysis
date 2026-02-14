@@ -1,0 +1,647 @@
+\newif\ifphonepdf
+\ifdefined\phonepdftrueoverride
+  \phonepdftrue
+\else
+  \phonepdffalse
+\fi
+\newif\ifspeedplots
+\ifdefined\speedplotsfalseoverride
+  \speedplotsfalse
+\else
+  \speedplotstrue
+\fi
+\newcommand{\figurevariant}{desktop}
+\newcommand{\sectionbreak}{\clearpage}
+
+\ifphonepdf
+  % Phone-friendly: narrow page with normal page height for robust mobile rendering.
+  % Very tall single-page PDFs can be truncated or partially rendered by viewers.
+  \usepackage[
+    paperwidth=108mm,
+    paperheight=220mm,
+    left=4mm,
+    right=4mm,
+    top=1.5mm,
+    bottom=1.5mm
+  ]{geometry}
+  \pagestyle{empty}
+  \raggedbottom
+  \renewcommand{\sectionbreak}{}
+  \renewcommand{\figurevariant}{phone}
+\else
+  \usepackage[a4paper,margin=2.5cm]{geometry}
+\fi
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\ifphonepdf
+  % Phone embed guard band: keep a small horizontal margin to avoid edge clipping
+  % in PDF viewers while preserving per-figure aspect ratios.
+  \setkeys{Gin}{pagebox=mediabox,width=0.98\linewidth}
+\else
+  \setkeys{Gin}{pagebox=mediabox}
+\fi
+\usepackage{hyperref}
+\ifphonepdf
+  % Hint PDF viewers to open in a vertical continuous layout.
+  \hypersetup{
+    pdfpagelayout=OneColumn,
+    pdfstartview=FitH
+  }
+\fi
+\usepackage{float}
+\title{Silverrudder 2025 Regatta Summary}
+\author{}
+\date{\today}
+\begin{document}
+\maketitle
+\section*{Overview}
+\ifspeedplots
+This document summarizes pace deltas (minutes per NM) and speed deltas ($\mathrm{kn}$) by leg.
+\else
+This document summarizes pace deltas (minutes per NM) by leg.
+\fi
+\paragraph{Purpose.}
+The purpose of this report is to give skippers a practical tool for evaluating and analyzing their performance in Silverrudder 2025. The focus is local performance: at each point on the course, compare one boat to the fleet baseline at that same point.
+\paragraph{Core question.}
+For pace, the question is: \emph{Where did a boat loose time compared with the fleet at the same point on the rhumb line}
+\ifspeedplots
+For speed, the analogous question is: \emph{Where was a boat fast compared with the fleet at the same point on the rhumb line}
+\fi
+\paragraph{Why this baseline.}
+The baseline is computed pointwise along leg progress (projected to the rhumb line), not from whole-leg averages.
+When tacking and gybing, boats do not sail along the rhumb line itself.
+For running and beating VMG would have made sense, but the wind data is not available.
+A downside of this methods is that if one boat was able to sail more along the rhumb line than another, but slower, then these plots would suggest that the boat moving the fastest was the best, while the slower boat may have had a shorter leg time.
+
+\paragraph{How to read.}
+Each leg figure shows, for every boat, the distribution of per-sample \emph{pace delta} relative to the fleet mean pace at the same \emph{progress} along the rhumb line (average route). Negative values mean a boat was faster than the baseline (lower minutes per NM), while positive values mean slower. The violin width indicates where samples are dense; the horizontal line is the median, and the dot is the mean. \ifspeedplots Each leg section includes both pace and speed delta plots; speed deltas are reported in knots.\fi
+\paragraph{Definitions (speed, pace, and mean pace).}
+The input data contains a \emph{speed} sample for each GPS record (after unit conversion to knots, $\mathrm{kn}$), and these recorded speed samples are used directly. This avoids estimating speed from successive positions, which is too noisy for this dataset.
+\emph{Pace} is the inverse representation: minutes per nautical mile. For each sample,
+\[
+\mathrm{pace}\,[\mathrm{min}/\mathrm{NM}] = \frac{60}{v\,[\mathrm{kn}]}.
+\]
+For example, $6.0\,\mathrm{kn} \Rightarrow 10.00\,\mathrm{min}/\mathrm{NM}$ and $5.0\,\mathrm{kn} \Rightarrow 12.00\,\mathrm{min}/\mathrm{NM}$.
+\paragraph{Why pace (not speed).}
+Pace is directly ``time per distance'', which makes it easier to reason about where time is gained or lost along the course. Because pace is the inverse of speed,
+\[
+\mathrm{pace}=\frac{60}{v},
+\]
+the relationship is nonlinear: the same speed change costs more minutes per nautical mile when the boat is already slow. Example: $6\,\mathrm{kn}\rightarrow 5\,\mathrm{kn}$ changes pace from $10.00$ to $12.00\,\mathrm{min}/\mathrm{NM}$ (+2.00), while $3\,\mathrm{kn}\rightarrow 2\,\mathrm{kn}$ changes pace from $20.00$ to $30.00\,\mathrm{min}/\mathrm{NM}$ (+10.00). Those extra minutes per mile add up directly into finish-time differences. Expressing performance as pace deltas highlights the locations where time is being lost, even when boats pass those locations at different times.
+\emph{Mean pace} in this report refers to a \emph{baseline} computed at a given location along the course: all boat samples are first projected to the rhumb line (average route) to obtain progress, then within a local progress window the per-sample paces are averaged to form a mean pace curve versus progress (and lightly smoothed along progress). Note that ``mean pace'' is \emph{not} the same as converting the mean speed, because inversion is nonlinear: in general $\overline{(60/v)} \neq 60/\overline{v}$.
+\paragraph{Pace delta.}
+For each boat sample, the plotted value is
+\[
+\Delta \mathrm{pace} = \mathrm{pace}_{\mathrm{boat}} - \mathrm{pace}_{\mathrm{mean}}(\mathrm{progress}).
+\]
+Negative $\Delta\mathrm{pace}$ means faster-than-baseline at that point on the course (lower minutes per NM), while positive means slower-than-baseline.
+\ifspeedplots
+\paragraph{Speed delta.}
+For each boat sample, the plotted value is
+\[
+\Delta \mathrm{Speed} = \mathrm{Speed}_{\mathrm{boat}} - \mathrm{Speed}_{\mathrm{mean}}(\mathrm{progress}).
+\]
+Positive $\Delta\mathrm{Speed}$ means faster-than-baseline at that point on the course (higher $\mathrm{kn}$), while negative means slower-than-baseline.
+\fi
+\paragraph{High-level observations.}
+Use the plot shapes as direct diagnostics:
+\begin{itemize}
+\item \textbf{Sign:} a mean dot or median line \emph{below} $0$ means faster-than-baseline at the same place on the course; \emph{above} $0$ means slower-than-baseline.
+\item \textbf{Consistency:} a tight violin shape means the boat stayed close to a single pace delta through the leg; a broad/tall shape means the pace delta moved around a lot within the leg.
+\item \textbf{Time leaks:} a long upper tail (large positive deltas) means the boat had patches where lost a lot of time in one spot. This highlights tradegies much better than speed plots.
+\item \textbf{Slow vs fast leg normalization:} There might be severeal knots differencin boat speed on a leg where everyone is going more than 8 knots. That is not a big pace difference, whereas 0.5 knots when everyone is doing 1.5 knots is massive. Pace plots keeps this in perspective.
+\end{itemize}
+\sectionbreak
+\section*{Leg 1: Start-Troense}
+The data for this leg was bad. By Troense the data is good again. That means that the only analysis possible is how long from the start it took to get to Troense.
+This captures both delay before the start line and performance for that short leg.
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-01-start-troense.pdf}
+\caption{Pace delta by boat for leg 1.}
+\end{figure}
+
+Clearly a lot of time gets lost in very short order.
+This is probably where most time can be gained most easily by many of the boats.
+A bad start gives more, not less, traffic.
+That means dirty air and more stress.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-01-start-troense.pdf}
+\caption{Speed delta by boat for leg 1.}
+\end{figure}
+\fi
+The average speeds are very different here.
+\sectionbreak
+\section*{Leg 2: Troense-Thurø Rev}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-02-troense-thuro-rev.pdf}
+\caption{Pace delta by boat for leg 2.}
+\end{figure}
+
+This leg is still dominated by skippers finding their groove at different timings.
+One group is doing fine, a few have problems, and still fewer has big problems.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-02-troense-thuro-rev.pdf}
+\caption{Speed delta by boat for leg 2.}
+\end{figure}
+\fi
+
+Average speeds are now within one knot, which is still a lot.
+There is still a lot of inconsistency.
+
+\sectionbreak
+\section*{Leg 3: Thurø Rev-Storebæltsbroen}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
+\caption{Pace delta by boat for leg 3.}
+\end{figure}
+
+The pace differences are still very large, and this is a long straight-line leg.
+The leg was very challenging and there was a lot of wipeouts which can be seen by the disproportionate outlier size towards slow pace compared to the last leg.
+For the boats in the middle the time lost here was lost all of a sudden.
+
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-03-thuro-rev-storebaeltsbroen.pdf}
+\caption{Speed delta by boat for leg 3.}
+\end{figure}
+\fi
+
+The slowest boats seem to struggle to keep a high mean speed, most likely due to convervative setups in the big breeze.
+The top speeds of the fastest boats are 6 knots (!!) faster than the top speed of the slowest.
+This is where the boats' potential can really outrun the experience of the skippers.
+
+\sectionbreak
+\section*{Leg 4: Storebæltsbroen-Fynshoved}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
+\caption{Pace delta by boat for leg 4.}
+\end{figure}
+
+Not a lot of time was won or lost on this leg. People stopped whiping out.
+
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-04-storebaeltsbroen-fynshoved.pdf}
+\caption{Speed delta by boat for leg 4.}
+\end{figure}
+\fi
+Interestingly Nor\dh ri seems to have a real edge of some sort.
+This is the leg where some people was on C0 and others on jib only.
+
+\sectionbreak
+\section*{Leg 5: Fynshoved-Æbelø}
+
+This leg was up wind but with no tacks.
+Some of the later boats had slightly less chop, and could bear away 1 or 2 degrees and still lay the mark.
+It is unclear if this was the case for the first boats to round Fynshoved.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-05-fynshoved-aebelo.pdf}
+\caption{Pace delta by boat for leg 5.}
+\end{figure}
+
+There is a mixup in who is the fastest compared to previous legs.
+One explaination is the different strengths of different skippers.
+Another is the changing conditions.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-05-fynshoved-aebelo.pdf}
+\caption{Speed delta by boat for leg 5.}
+\end{figure}
+\fi
+
+The speed differences are very low at around $\pm 0.1$ kn, on the other hand with so low standard deviations some boats mean speed are outside other boats 50\% quantiles, which is very significant.
+
+\sectionbreak
+\section*{Leg 6: Æbelø-Strib Fyr}
+This was a true up wind leg with many tacks, counter current, chop, and the like.
+The wind was easing and the counter current increasing.
+Early boats was at an advantage.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-06-aebelo-strib-fyr.pdf}
+\caption{Pace delta by boat for leg 6.}
+\end{figure}
+
+Here we see that some boats have long upper tails, indicating that they lost a lot of time being very slow at times, but when they were going, they were more or less up to speed.
+This can be due to slow tacks or other short term time stealers.
+The first boats to arrive on this leg keeps pulling away.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-06-aebelo-strib-fyr.pdf}
+\caption{Speed delta by boat for leg 6.}
+\end{figure}
+\fi
+
+The speeds tell the same story, but the breif dipping into slow speeds for some boats does not look as bad as it actually is according to the pace plots.
+
+\sectionbreak
+\section*{Leg 7: Strib Fyr-Snævringen}
+
+This is a relatively short leg, but an absolutely crucial one.
+It was up wind, the counter current was increasing, and the wind was very light - a lethal combination.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-07-strib-fyr-snaevringen.pdf}
+\caption{Pace delta by boat for leg 7.}
+\end{figure}
+
+Every boat was wildly inconsistent and loosing a lot of time in spots of calm air and counter current.
+The performance is completely shuffled compared to the previous legs.
+This is where there is most potential to gain time next year.
+Learn to sail the current and the winds and gain many places.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-07-strib-fyr-snaevringen.pdf}
+\caption{Speed delta by boat for leg 7.}
+\end{figure}
+\fi
+
+Nor\dh ri is again head and shoulders above the rest with 75\% of the leg sailing faster that the mean of everyone else, a combination of timing and skill.
+
+\sectionbreak
+\section*{Leg 8: Snævringen-Bogø}
+This leg was all about managing the current.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-08-snaevringen-bogo.pdf}
+\caption{Pace delta by boat for leg 8.}
+\end{figure}
+
+Here we see that the difference between boats are much larger than the differnce of perfomance of each boat during the leg compared to the previous leg.
+In other words the difference here is not luck, but skill.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-08-snaevringen-bogo.pdf}
+\caption{Speed delta by boat for leg 8.}
+\end{figure}
+\fi
+
+We see speed differences of $\pm 0.5$ knots which is not just down to skill in boat speed, but also in positioning in relation to current.
+
+\sectionbreak
+\section*{Leg 9: Bogø-Horneland}
+This leg was very light winds and a lot of current in the beginning. The rich are getting richer in this leg, or rather the poor is getting poorer.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-09-bogo-horneland.pdf}
+\caption{Pace delta by boat for leg 9.}
+\end{figure}
+
+It is clear from the pace plot that the last boats are struggeling with current and no wind.
+Some real agony is going on here.
+This legs gives a lot of spread to the field.
+This is where Mercutio cements the win with the best pace and the best consistency.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-09-bogo-horneland.pdf}
+\caption{Speed delta by boat for leg 9.}
+\end{figure}
+\fi
+
+This is where the speed plot does not tell the same story as the pace plots.
+It looks like everybody is doing the same sort of speeds, but in reality the tranquility is sometimes broken by horror of being becalmed for a long time.
+
+\sectionbreak
+\section*{Leg 10: Horneland-Lehnskov}
+An even more tragic leg than the last.
+The last boats encounter very light wind and massive counter current in Svendborgsund.
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-10-horneland-lehnskov.pdf}
+\caption{Pace delta by boat for leg 10.}
+\end{figure}
+
+The leaders see much more predictable conditions, and sail more consistent.
+We see boats loosing 10-20 minutes per mile at times.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-10-horneland-lehnskov.pdf}
+\caption{Speed delta by boat for leg 10.}
+\end{figure}
+\fi
+
+Ægir 2.0 is doing a significant comeback on this and the last leg.
+This leg is where the whole race is won or lost.
+
+\sectionbreak
+\section*{Leg 11: Lehnskov-Finish}
+
+This was a high variance leg, but not as bad as the last two. The winds are still very light.
+The rear of the pack suffer another bout of counter current.
+
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-leg-11-lehnskov-finish.pdf}
+\caption{Pace delta by boat for leg 11.}
+\end{figure}
+
+The speeds on this leg tells the same story as the pace. High consitency for the leaders, low for the rear.
+
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-leg-11-lehnskov-finish.pdf}
+\caption{Speed delta by boat for leg 11.}
+\end{figure}
+\fi
+
+
+\sectionbreak
+\ifspeedplots
+\section*{Pair summaries (pace and speed)}
+\else
+\section*{Pair summaries (pace)}
+\fi
+This section compares selected boats directly with split violins by leg.
+For each leg, the left half is the first named boat and the right half is the second.
+\subsection*{Saga vs Julia}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-pair-saga-vs-julia.pdf}
+\caption{Pace delta by leg: Saga (left half) vs Julia (right half).}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-pair-saga-vs-julia.pdf}
+\caption{Speed delta by leg: Saga (left half) vs Julia (right half).}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Saga vs Samba}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-pair-saga-vs-samba.pdf}
+\caption{Pace delta by leg: Saga (left half) vs Samba (right half).}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-pair-saga-vs-samba.pdf}
+\caption{Speed delta by leg: Saga (left half) vs Samba (right half).}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Saga vs Mercutio}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-pair-saga-vs-mercutio.pdf}
+\caption{Pace delta by leg: Saga (left half) vs Mercutio (right half).}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-pair-saga-vs-mercutio.pdf}
+\caption{Speed delta by leg: Saga (left half) vs Mercutio (right half).}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Mercutio vs My}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-pair-mercutio-vs-my.pdf}
+\caption{Pace delta by leg: Mercutio (left half) vs My (right half).}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-pair-mercutio-vs-my.pdf}
+\caption{Speed delta by leg: Mercutio (left half) vs My (right half).}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Mercutio vs Vera}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-pair-mercutio-vs-vera.pdf}
+\caption{Pace delta by leg: Mercutio (left half) vs Vera (right half).}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-pair-mercutio-vs-vera.pdf}
+\caption{Speed delta by leg: Mercutio (left half) vs Vera (right half).}
+\end{figure}
+\fi
+
+\sectionbreak
+\ifspeedplots
+\section*{Boat summaries (pace and speed)}
+\else
+\section*{Boat summaries (pace)}
+\fi
+This section summarizes pace deltas (and speed deltas, if enabled) by boat across all legs. Each boat's distribution of deltas is aggregated across all legs to show where the boat was faster or slower than the baseline at the same places on the course. The same violin-plot interpretation applies: negative centers mean faster-than-baseline, positive centers mean slower-than-baseline, and broad/long shapes flag inconsistency or specific locations with large time loss.
+\subsection*{Saga}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-saga.pdf}
+\caption{Pace delta by leg for Saga.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-saga.pdf}
+\caption{Speed delta by leg for Saga.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Sweet Escape}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-sweet-escape.pdf}
+\caption{Pace delta by leg for Sweet Escape.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-sweet-escape.pdf}
+\caption{Speed delta by leg for Sweet Escape.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Mercutio}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-mercutio.pdf}
+\caption{Pace delta by leg for Mercutio.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-mercutio.pdf}
+\caption{Speed delta by leg for Mercutio.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Gladys}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-gladys.pdf}
+\caption{Pace delta by leg for Gladys.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-gladys.pdf}
+\caption{Speed delta by leg for Gladys.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Ægir 2.0}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-aegir-2-0.pdf}
+\caption{Pace delta by leg for Ægir 2.0.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-aegir-2-0.pdf}
+\caption{Speed delta by leg for Ægir 2.0.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Nor\dh ri}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-nordri.pdf}
+\caption{Pace delta by leg for Nor\dh ri.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-nordri.pdf}
+\caption{Speed delta by leg for Nor\dh ri.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Vera}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-vera.pdf}
+\caption{Pace delta by leg for Vera.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-vera.pdf}
+\caption{Speed delta by leg for Vera.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Moana}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-moana.pdf}
+\caption{Pace delta by leg for Moana.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-moana.pdf}
+\caption{Speed delta by leg for Moana.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{My}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-my.pdf}
+\caption{Pace delta by leg for My.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-my.pdf}
+\caption{Speed delta by leg for My.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Julia}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-julia.pdf}
+\caption{Pace delta by leg for Julia.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-julia.pdf}
+\caption{Speed delta by leg for Julia.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Lets Sea}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-lets-sea.pdf}
+\caption{Pace delta by leg for Lets Sea.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-lets-sea.pdf}
+\caption{Speed delta by leg for Lets Sea.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Chaya}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-chaya.pdf}
+\caption{Pace delta by leg for Chaya.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-chaya.pdf}
+\caption{Speed delta by leg for Chaya.}
+\end{figure}
+\fi
+\sectionbreak
+\subsection*{Samba}
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/pace-delta-boat-samba.pdf}
+\caption{Pace delta by leg for Samba.}
+\end{figure}
+\ifspeedplots
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/speed-delta-boat-samba.pdf}
+\caption{Speed delta by leg for Samba.}
+\end{figure}
+\fi
+\end{document}

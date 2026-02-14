@@ -66,8 +66,8 @@ BOX_PLOT_AXIS_STYLE_SPEED = BOX_PLOT_AXIS_STYLE_COMMON
 BOX_PLOT_STYLE_PACE = BOX_PLOT_STYLE_COMMON
 BOX_PLOT_AXIS_STYLE_PACE = replace(BOX_PLOT_AXIS_STYLE_COMMON, major_tick=2.0)
 # Distribution bounds policy used for both y-scaling and violin clipping.
-DELTA_RANGE_LOWER_PERCENTILE = 0.0
-DELTA_RANGE_UPPER_PERCENTILE = 100.0
+DELTA_RANGE_LOWER_PERCENTILE = 2.0
+DELTA_RANGE_UPPER_PERCENTILE = 98.0
 # Hard upper cap for pace delta plots [min/NM].
 PACE_DELTA_UPPER_CAP = 10.0
 
@@ -112,7 +112,7 @@ FIGURE_PROFILES = {
         },
         waypoint_label_fontsize=9.0,
         pace_units_per_inch_factor=0.8,
-        speed_units_per_inch_factor=1.5,
+        speed_units_per_inch_factor=1,
         boxplot_top_margin_in=0.30,
         boxplot_bottom_margin_in=0.95,
         boxplot_left_margin_in=0.75,
@@ -492,11 +492,13 @@ def main():
     show_pace_box_plots = True
     show_pace_box_plots_by_boat = True
     show_pace_pair_plots = True
-    pace_pairs = [
-        ("Vera", "Mercutio"),
-        ("Julia", "Saga"),
+    show_speed_pair_plots = True
+    comparison_pairs = [
+        ("Saga", "Julia"),
         ("Saga", "Samba"),
+        ("Saga", "Mercutio"),
         ("Mercutio", "My"),
+        ("Mercutio", "Vera"),
     ]
     show_speed_box_plots = True
     show_speed_box_plots_by_boat = True
@@ -507,7 +509,7 @@ def main():
     # -----------------------------------------------------------------------
     # Precompute pace inputs once and reuse for both "by leg" + "by boat" pace plots.
     pace_box_plot_data = None
-    if show_pace_box_plots or show_pace_box_plots_by_boat:
+    if show_pace_box_plots or show_pace_box_plots_by_boat or show_pace_pair_plots:
         pace_box_plot_data = prepare_pace_delta_box_plot_data(
             tracks,
             speed_window_stats,
@@ -520,7 +522,7 @@ def main():
 
     # Precompute speed inputs once and reuse for both speed plot families.
     speed_box_plot_data = None
-    if show_speed_box_plots or show_speed_box_plots_by_boat:
+    if show_speed_box_plots or show_speed_box_plots_by_boat or show_speed_pair_plots:
         speed_box_plot_data = prepare_speed_delta_box_plot_data(
             tracks,
             speed_window_stats,
@@ -579,7 +581,7 @@ def main():
                 plot_pace_delta_split_violin_by_pair(
                     tracks,
                     pace_box_plot_data,
-                    pace_pairs,
+                    comparison_pairs,
                     export_dir=export_dir,
                     export_and_close=export_and_close_figures,
                 )
@@ -596,6 +598,15 @@ def main():
                 plot_speed_delta_box_plot_by_boat(
                     tracks,
                     speed_box_plot_data,
+                    export_dir=export_dir,
+                    export_and_close=export_and_close_figures,
+                )
+
+            if show_speed_pair_plots:
+                plot_speed_delta_split_violin_by_pair(
+                    tracks,
+                    speed_box_plot_data,
+                    comparison_pairs,
                     export_dir=export_dir,
                     export_and_close=export_and_close_figures,
                 )
@@ -1856,6 +1867,170 @@ def find_track_index_by_name(tracks, target_name):
         if track_name == target_normalized:
             return track_index
     return None
+
+
+def plot_speed_delta_split_violin_by_pair(
+    tracks,
+    speed_plot_data: Optional[SpeedDeltaBoxPlotData],
+    pair_names: Optional[List[tuple[str, str]]] = None,
+    export_dir=None,
+    export_and_close=False,
+):
+    """
+    Export one speed-only split-violin figure per selected boat pair.
+
+    Each figure compares two boats across all legs:
+    - left half: first boat in pair
+    - right half: second boat in pair
+    """
+    if speed_plot_data is None:
+        return
+    if not pair_names:
+        return
+
+    track_progress_by_track = speed_plot_data.track_progress_by_track
+    speed_delta_by_track = speed_plot_data.speed_delta_by_track
+    progress_values = speed_plot_data.progress_values
+    leg_labels = speed_plot_data.leg_labels
+    first_leg_delta_by_track = speed_plot_data.first_leg_delta_by_track
+    leg_count = len(progress_values) - 1
+    if leg_count < 1:
+        return
+
+    scale_context = compute_metric_scale_context(
+        track_progress_by_track,
+        speed_delta_by_track,
+        progress_values,
+        first_leg_delta_by_track,
+        units_per_inch_factor=ACTIVE_FIGURE_PROFILE.speed_units_per_inch_factor,
+    )
+    if scale_context is None:
+        return
+    _, _, global_range, units_per_inch = scale_context
+
+    for left_name, right_name in pair_names:
+        left_index = find_track_index_by_name(tracks, left_name)
+        right_index = find_track_index_by_name(tracks, right_name)
+        if left_index is None or right_index is None:
+            continue
+
+        pair_lower = np.inf
+        pair_upper = -np.inf
+        for track_index in (left_index, right_index):
+            track_range = compute_track_robust_delta_range(
+                track_progress_by_track[track_index],
+                speed_delta_by_track[track_index],
+                progress_values,
+                first_leg_delta_by_track[track_index],
+            )
+            if track_range is None:
+                continue
+            pair_lower = min(pair_lower, track_range[0])
+            pair_upper = max(pair_upper, track_range[1])
+        if not np.isfinite(pair_lower) or not np.isfinite(pair_upper):
+            continue
+
+        local_lower, local_upper, local_range = box_plots.compute_local_plot_range(
+            pair_lower, pair_upper, global_range
+        )
+        local_lower, local_upper, local_range = expand_y_limits_by_subticks(
+            local_lower, local_upper, BOX_PLOT_AXIS_STYLE_SPEED, subticks_each_side=2
+        )
+        if local_range <= 0:
+            local_range = 1.0
+            local_lower = local_upper - local_range
+
+        fig, ax = plt.subplots()
+        prepare_figure(fig, export_and_close=export_and_close)
+        pair_tick_extra_bottom_in = 0.40
+        pair_tick_edge_padding = 0.70
+        if ACTIVE_FIGURE_PROFILE.name == "phone":
+            pair_tick_extra_bottom_in = 0.75
+            pair_tick_edge_padding = 0.85
+        apply_boxplot_physical_layout(
+            fig,
+            local_range,
+            units_per_inch,
+            extra_bottom_in=pair_tick_extra_bottom_in,
+        )
+        box_plots.apply_boxplot_axis_style(ax, BOX_PLOT_AXIS_STYLE_SPEED)
+        ax.set_ylim(local_lower, local_upper)
+
+        left_color = tracks[left_index].get("color") or (0.3, 0.3, 0.3)
+        right_color = tracks[right_index].get("color") or (0.3, 0.3, 0.3)
+        left_progress = track_progress_by_track[left_index]
+        left_delta = speed_delta_by_track[left_index]
+        right_progress = track_progress_by_track[right_index]
+        right_delta = speed_delta_by_track[right_index]
+        left_first_leg = first_leg_delta_by_track[left_index]
+        right_first_leg = first_leg_delta_by_track[right_index]
+
+        for leg_index in range(leg_count):
+            left_leg = get_leg_samples_for_track(
+                left_progress,
+                left_delta,
+                progress_values,
+                leg_index,
+                left_first_leg,
+            )
+            right_leg = get_leg_samples_for_track(
+                right_progress,
+                right_delta,
+                progress_values,
+                leg_index,
+                right_first_leg,
+            )
+            if left_leg is None and right_leg is None:
+                continue
+
+            draw_split_violin_distribution(
+                ax,
+                leg_index + 1,
+                [] if left_leg is None else left_leg,
+                [] if right_leg is None else right_leg,
+                left_color,
+                right_color,
+                style=BOX_PLOT_STYLE_SPEED,
+            )
+
+        ax.set_xticks(range(1, leg_count + 1))
+        ax.set_xticklabels(
+            leg_labels,
+            rotation=45,
+            ha="right",
+            rotation_mode="anchor",
+            fontsize=ACTIVE_FIGURE_PROFILE.waypoint_label_fontsize,
+        )
+        ax.set_xlim(1.0 - pair_tick_edge_padding, leg_count + pair_tick_edge_padding)
+        ax.set_ylabel(r"$\Delta \mathrm{Speed}\,[\mathrm{kn}]$")
+        ax.set_ylim(local_lower, local_upper)
+        left_title = latex_display_name(tracks[left_index].get("name", left_name))
+        right_title = latex_display_name(tracks[right_index].get("name", right_name))
+        ax.set_title(f"{left_title} vs {right_title}")
+        legend_handles = [
+            mpatches.Patch(
+                facecolor=left_color,
+                edgecolor=left_color,
+                alpha=BOX_PLOT_STYLE_SPEED.box_alpha,
+                label=left_title,
+            ),
+            mpatches.Patch(
+                facecolor=right_color,
+                edgecolor=right_color,
+                alpha=BOX_PLOT_STYLE_SPEED.box_alpha,
+                label=right_title,
+            ),
+        ]
+        ax.legend(handles=legend_handles, loc="upper right")
+
+        if export_dir is not None:
+            export_dir.mkdir(parents=True, exist_ok=True)
+            safe_left = sh.sanitize_filename_label(tracks[left_index].get("name", left_name))
+            safe_right = sh.sanitize_filename_label(tracks[right_index].get("name", right_name))
+            output_path = export_dir / f"speed-delta-pair-{safe_left}-vs-{safe_right}.pdf"
+            save_figure(fig, output_path)
+        if export_and_close:
+            plt.close(fig)
 
 
 def plot_pace_delta_split_violin_by_pair(
