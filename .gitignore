@@ -18,6 +18,9 @@ documentation/*.out
 documentation/*.synctex.gz
 documentation/*.synctex.gz.sum.synctex
 documentation/main*.pdf
+documentation/reports-pdf/
+documentation/reports-tmp/
+documentation/.figures-generating*.lock
 finish.csv
 main.aux
 main.fdb_latexmk

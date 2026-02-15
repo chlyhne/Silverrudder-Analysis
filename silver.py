@@ -26,6 +26,9 @@ Output behavior:
 """
 
 from dataclasses import dataclass, replace
+import concurrent.futures
+import multiprocessing as mp
+import os
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -66,8 +69,8 @@ BOX_PLOT_AXIS_STYLE_SPEED = BOX_PLOT_AXIS_STYLE_COMMON
 BOX_PLOT_STYLE_PACE = BOX_PLOT_STYLE_COMMON
 BOX_PLOT_AXIS_STYLE_PACE = replace(BOX_PLOT_AXIS_STYLE_COMMON, major_tick=2.0)
 # Distribution bounds policy used for both y-scaling and violin clipping.
-DELTA_RANGE_LOWER_PERCENTILE = 2.0
-DELTA_RANGE_UPPER_PERCENTILE = 98.0
+DELTA_RANGE_LOWER_PERCENTILE = 0.0
+DELTA_RANGE_UPPER_PERCENTILE = 100.0
 # Hard upper cap for pace delta plots [min/NM].
 PACE_DELTA_UPPER_CAP = 10.0
 
@@ -141,6 +144,7 @@ FIGURE_PROFILES = {
     ),
 }
 ACTIVE_FIGURE_PROFILE = FIGURE_PROFILES["desktop"]
+PARALLEL_RENDER_CONTEXT = None
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +159,144 @@ def set_active_figure_profile(profile):
     """
     global ACTIVE_FIGURE_PROFILE
     ACTIVE_FIGURE_PROFILE = profile
+
+
+def resolve_plot_worker_count(default_max_workers=4):
+    """
+    Resolve the process count for parallel plot rendering.
+
+    Priority:
+    1) SILVER_PLOT_WORKERS env var (if valid integer >= 1)
+    2) default min(default_max_workers, CPU count)
+    """
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    default_workers = max(1, min(default_max_workers, cpu_count))
+    env_value = os.getenv("SILVER_PLOT_WORKERS", "").strip()
+    if not env_value:
+        return default_workers
+    try:
+        parsed_value = int(env_value)
+    except ValueError:
+        return default_workers
+    return max(1, parsed_value)
+
+
+def initialize_parallel_render_context(context):
+    """
+    Store immutable render context for process workers.
+    """
+    global PARALLEL_RENDER_CONTEXT
+    PARALLEL_RENDER_CONTEXT = context
+
+
+def render_plot_family_task(profile_name, family_name, export_dir_path, export_and_close):
+    """
+    Render one plot family for one figure profile.
+
+    This function is safe to execute in worker processes.
+    """
+    context = PARALLEL_RENDER_CONTEXT
+    if context is None:
+        raise RuntimeError("Parallel render context has not been initialized.")
+
+    profile = FIGURE_PROFILES[profile_name]
+    set_active_figure_profile(profile)
+
+    export_dir = None if export_dir_path is None else Path(export_dir_path)
+    tracks = context["tracks"]
+    average_route = context["average_route"]
+    speed_window_stats = context["speed_window_stats"]
+    way_point_progress = context["way_point_progress"]
+    way_point_names = context["way_point_names"]
+    pace_box_plot_data = context["pace_box_plot_data"]
+    speed_box_plot_data = context["speed_box_plot_data"]
+    comparison_pairs = context["comparison_pairs"]
+
+    with matplotlib.rc_context(profile.rc_params):
+        if family_name == "map":
+            plot_colored_tracks(
+                tracks,
+                average_route,
+                speed_window_stats,
+                way_point_progress,
+                way_point_names,
+                export_path=(export_dir / "map.pdf") if export_and_close and export_dir is not None else None,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "pace_leg":
+            plot_pace_delta_box_plot(
+                tracks,
+                pace_box_plot_data,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "pace_boat":
+            plot_pace_delta_box_plot_by_boat(
+                tracks,
+                pace_box_plot_data,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "pace_pair":
+            plot_pace_delta_split_violin_by_pair(
+                tracks,
+                pace_box_plot_data,
+                comparison_pairs,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "speed_leg":
+            plot_speed_delta_box_plot(
+                tracks,
+                speed_box_plot_data,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "speed_boat":
+            plot_speed_delta_box_plot_by_boat(
+                tracks,
+                speed_box_plot_data,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "speed_pair":
+            plot_speed_delta_split_violin_by_pair(
+                tracks,
+                speed_box_plot_data,
+                comparison_pairs,
+                export_dir=export_dir,
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "pace_range":
+            plot_speed_range_along_route(
+                tracks,
+                speed_window_stats,
+                way_point_progress,
+                way_point_names,
+                export_path=(
+                    export_dir / "pace-range-along-route.pdf"
+                    if export_and_close and export_dir is not None
+                    else None
+                ),
+                export_and_close=export_and_close,
+            )
+            return
+
+    raise ValueError(f"Unknown render family: {family_name}")
 
 
 def prepare_figure(fig, export_and_close=False):
@@ -400,6 +542,7 @@ def draw_split_violin_distribution(
 
 
 def main():
+    figure_generation_lock = None
     # -----------------------------------------------------------------------
     # Stage 1: Load raw inputs
     # -----------------------------------------------------------------------
@@ -485,6 +628,15 @@ def main():
     # Turn off interactive backends for predictable batch operation.
     if export_and_close_figures:
         plt.ioff()
+        figure_output_root.parent.mkdir(parents=True, exist_ok=True)
+        figure_generation_lock = (
+            figure_output_root.parent / f".figures-generating.{os.getpid()}.lock"
+        )
+        figure_generation_lock.write_text(
+            f"Figure generation in progress (pid={os.getpid()}).\n"
+            "This file is created by silver.py and removed when rendering finishes.\n",
+            encoding="utf-8",
+        )
 
     # Toggle matrix for each output group.
     # Keeping toggles centralized makes experimentation easier without touching logic.
@@ -493,13 +645,7 @@ def main():
     show_pace_box_plots_by_boat = True
     show_pace_pair_plots = True
     show_speed_pair_plots = True
-    comparison_pairs = [
-        ("Saga", "Julia"),
-        ("Saga", "Samba"),
-        ("Saga", "Mercutio"),
-        ("Mercutio", "My"),
-        ("Mercutio", "Vera"),
-    ]
+    comparison_pairs = build_all_ordered_comparison_pairs(tracks)
     show_speed_box_plots = True
     show_speed_box_plots_by_boat = True
     show_pace_range_plot = False
@@ -537,89 +683,92 @@ def main():
     # Stage 6: Render profile families
     # -----------------------------------------------------------------------
     # Always export both families so LaTeX wrappers can choose inclusion profile later.
-    figure_profiles = [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
-    for figure_profile in figure_profiles:
-        set_active_figure_profile(figure_profile)
-        # Profile subfolder keeps outputs isolated:
-        # documentation/figures/desktop/*
-        # documentation/figures/phone/*
-        export_dir = (
-            figure_output_root / figure_profile.output_subdir
-            if export_and_close_figures
-            else None
-        )
-        # rc_context ensures profile typography/size settings do not leak globally.
-        with matplotlib.rc_context(figure_profile.rc_params):
+    try:
+        figure_profiles = [FIGURE_PROFILES["desktop"], FIGURE_PROFILES["phone"]]
+        render_tasks = []
+        for figure_profile in figure_profiles:
+            # Profile subfolder keeps outputs isolated:
+            # documentation/figures/desktop/*
+            # documentation/figures/phone/*
+            export_dir = (
+                figure_output_root / figure_profile.output_subdir
+                if export_and_close_figures
+                else None
+            )
+            export_dir_path = None if export_dir is None else str(export_dir)
             if show_map_plot:
-                plot_colored_tracks(
-                    tracks,
-                    average_route,
-                    speed_window_stats,
-                    way_point_progress,
-                    way_point_names,
-                    export_path=(export_dir / "map.pdf") if export_and_close_figures else None,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "map", export_dir_path, export_and_close_figures)
                 )
-
             if show_pace_box_plots:
-                plot_pace_delta_box_plot(
-                    tracks,
-                    pace_box_plot_data,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "pace_leg", export_dir_path, export_and_close_figures)
                 )
-
             if show_pace_box_plots_by_boat:
-                plot_pace_delta_box_plot_by_boat(
-                    tracks,
-                    pace_box_plot_data,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "pace_boat", export_dir_path, export_and_close_figures)
                 )
-
             if show_pace_pair_plots:
-                plot_pace_delta_split_violin_by_pair(
-                    tracks,
-                    pace_box_plot_data,
-                    comparison_pairs,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "pace_pair", export_dir_path, export_and_close_figures)
                 )
-
             if show_speed_box_plots:
-                plot_speed_delta_box_plot(
-                    tracks,
-                    speed_box_plot_data,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "speed_leg", export_dir_path, export_and_close_figures)
                 )
-
             if show_speed_box_plots_by_boat:
-                plot_speed_delta_box_plot_by_boat(
-                    tracks,
-                    speed_box_plot_data,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "speed_boat", export_dir_path, export_and_close_figures)
                 )
-
             if show_speed_pair_plots:
-                plot_speed_delta_split_violin_by_pair(
-                    tracks,
-                    speed_box_plot_data,
-                    comparison_pairs,
-                    export_dir=export_dir,
-                    export_and_close=export_and_close_figures,
+                render_tasks.append(
+                    (figure_profile.name, "speed_pair", export_dir_path, export_and_close_figures)
+                )
+            if show_pace_range_plot:
+                render_tasks.append(
+                    (figure_profile.name, "pace_range", export_dir_path, export_and_close_figures)
                 )
 
-            if show_pace_range_plot:
-                plot_speed_range_along_route(
-                    tracks,
-                    speed_window_stats,
-                    way_point_progress,
-                    way_point_names,
-                    export_path=(export_dir / "pace-range-along-route.pdf") if export_and_close_figures else None,
-                    export_and_close=export_and_close_figures,
-                )
+        render_context = {
+            "tracks": tracks,
+            "average_route": average_route,
+            "speed_window_stats": speed_window_stats,
+            "way_point_progress": way_point_progress,
+            "way_point_names": way_point_names,
+            "pace_box_plot_data": pace_box_plot_data,
+            "speed_box_plot_data": speed_box_plot_data,
+            "comparison_pairs": comparison_pairs,
+        }
+
+        render_worker_count = resolve_plot_worker_count()
+        use_parallel_rendering = (
+            export_and_close_figures
+            and render_worker_count > 1
+            and len(render_tasks) > 1
+        )
+        if use_parallel_rendering:
+            print(
+                f"Rendering {len(render_tasks)} plot families with {render_worker_count} workers."
+            )
+            multiprocessing_context = mp.get_context("spawn")
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=render_worker_count,
+                mp_context=multiprocessing_context,
+                initializer=initialize_parallel_render_context,
+                initargs=(render_context,),
+            ) as executor:
+                futures = [
+                    executor.submit(render_plot_family_task, *task) for task in render_tasks
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+        else:
+            initialize_parallel_render_context(render_context)
+            for task in render_tasks:
+                render_plot_family_task(*task)
+    finally:
+        if figure_generation_lock is not None and figure_generation_lock.exists():
+            figure_generation_lock.unlink()
 
     # In interactive mode only, keep figures open for manual inspection.
     if not export_and_close_figures:
@@ -1867,6 +2016,30 @@ def find_track_index_by_name(tracks, target_name):
         if track_name == target_normalized:
             return track_index
     return None
+
+
+def build_all_ordered_comparison_pairs(tracks):
+    """
+    Build all ordered boat pairs (A vs B) with A != B.
+
+    Order matters for split violins:
+    - left half: first boat
+    - right half: second boat
+    """
+    track_names = []
+    for track in tracks:
+        track_name = str(track.get("name", "")).strip()
+        if not track_name:
+            continue
+        track_names.append(track_name)
+
+    ordered_pairs = []
+    for left_name in track_names:
+        for right_name in track_names:
+            if left_name == right_name:
+                continue
+            ordered_pairs.append((left_name, right_name))
+    return ordered_pairs
 
 
 def plot_speed_delta_split_violin_by_pair(
