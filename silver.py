@@ -36,6 +36,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
 matplotlib.rcParams["text.usetex"] = True
 matplotlib.rcParams["font.family"] = "serif"
 matplotlib.rcParams["font.serif"] = ["Computer Modern Roman"]
@@ -208,6 +209,7 @@ def render_plot_family_task(profile_name, family_name, export_dir_path, export_a
     speed_window_stats = context["speed_window_stats"]
     way_point_progress = context["way_point_progress"]
     way_point_names = context["way_point_names"]
+    start_gate_pos = context.get("start_gate_pos")
     pace_box_plot_data = context["pace_box_plot_data"]
     speed_box_plot_data = context["speed_box_plot_data"]
     comparison_pairs = context["comparison_pairs"]
@@ -289,6 +291,22 @@ def render_plot_family_task(profile_name, family_name, export_dir_path, export_a
                 way_point_names,
                 export_path=(
                     export_dir / "pace-range-along-route.pdf"
+                    if export_and_close and export_dir is not None
+                    else None
+                ),
+                export_and_close=export_and_close,
+            )
+            return
+
+        if family_name == "time_delta":
+            plot_time_delta_along_route(
+                tracks,
+                speed_window_stats,
+                way_point_progress,
+                way_point_names,
+                start_gate_pos=start_gate_pos,
+                export_path=(
+                    export_dir / "time-delta-along-route.pdf"
                     if export_and_close and export_dir is not None
                     else None
                 ),
@@ -649,6 +667,7 @@ def main():
     show_speed_box_plots = True
     show_speed_box_plots_by_boat = True
     show_pace_range_plot = False
+    show_time_delta_plot = True
 
     # -----------------------------------------------------------------------
     # Stage 5: Shared data prep for speed/pace variants
@@ -728,6 +747,10 @@ def main():
                 render_tasks.append(
                     (figure_profile.name, "pace_range", export_dir_path, export_and_close_figures)
                 )
+            if show_time_delta_plot:
+                render_tasks.append(
+                    (figure_profile.name, "time_delta", export_dir_path, export_and_close_figures)
+                )
 
         render_context = {
             "tracks": tracks,
@@ -735,6 +758,7 @@ def main():
             "speed_window_stats": speed_window_stats,
             "way_point_progress": way_point_progress,
             "way_point_names": way_point_names,
+            "start_gate_pos": start_gate_pos,
             "pace_box_plot_data": pace_box_plot_data,
             "speed_box_plot_data": speed_box_plot_data,
             "comparison_pairs": comparison_pairs,
@@ -1171,6 +1195,17 @@ def expand_y_limits_by_subticks(local_lower, local_upper, axis_style, subticks_e
     local_lower -= padding
     local_upper += padding
     return local_lower, local_upper, local_upper - local_lower
+
+
+def format_minutes_as_hhmm(value, _tick_pos=None):
+    """Format minute values as signed h:mm."""
+    if not np.isfinite(value):
+        return ""
+    sign = "-" if value < 0 else ""
+    total_minutes = int(np.round(abs(value)))
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    return f"{sign}{hours}:{minutes:02d}"
 
 
 def plot_colored_tracks(
@@ -2382,6 +2417,172 @@ def plot_pace_delta_split_violin_by_pair(
 # ---------------------------------------------------------------------------
 # Optional diagnostic plots
 # ---------------------------------------------------------------------------
+def compute_time_delta_samples_along_route(
+    tracks,
+    route_sample_count,
+    start_gate_pos=None,
+    progress_sample_count=1200,
+):
+    """
+    Build cumulative time-delta samples versus progress for all boats.
+
+    For each boat:
+    1) Convert route index -> progress in [0, 1]
+    2) Build elapsed time [min] from Start gate crossing when available
+    3) Interpolate elapsed time onto a shared progress grid
+
+    The returned delta is:
+        boat elapsed time - fleet mean elapsed time
+    at the same progress.
+    """
+    if route_sample_count < 2:
+        return None, None
+
+    progress_grid = np.linspace(0.0, 1.0, int(max(2, progress_sample_count)))
+    elapsed_on_grid_by_track = []
+
+    for track in tracks:
+        route_index = np.asarray(track.get("routeIdx", []), dtype=float)
+        time_values = np.asarray(track.get("t", []), dtype=float)
+        valid_mask = (
+            np.isfinite(route_index)
+            & np.isfinite(time_values)
+            & (route_index >= 1)
+            & (route_index <= route_sample_count)
+        )
+        if np.count_nonzero(valid_mask) < 2:
+            elapsed_on_grid_by_track.append(np.full(progress_grid.size, np.nan, dtype=float))
+            continue
+
+        progress = (route_index[valid_mask] - 1) / (route_sample_count - 1)
+        start_time = time_values[valid_mask][0]
+        gate_times = np.asarray(track.get("gateTimes", []), dtype=float)
+        if (
+            start_gate_pos is not None
+            and gate_times.size > int(start_gate_pos)
+            and np.isfinite(gate_times[int(start_gate_pos)])
+        ):
+            start_time = float(gate_times[int(start_gate_pos)])
+        elif gate_times.size:
+            finite_gate_times = gate_times[np.isfinite(gate_times)]
+            if finite_gate_times.size:
+                start_time = float(np.min(finite_gate_times))
+        elapsed_minutes = (time_values[valid_mask] - start_time) / 60.0
+
+        sort_index = np.argsort(progress)
+        progress = progress[sort_index]
+        elapsed_minutes = elapsed_minutes[sort_index]
+
+        progress_unique, unique_index = np.unique(progress, return_index=True)
+        elapsed_unique = elapsed_minutes[unique_index]
+        if progress_unique.size < 2:
+            elapsed_on_grid_by_track.append(np.full(progress_grid.size, np.nan, dtype=float))
+            continue
+
+        # Guard against tiny non-monotonic artifacts introduced by de-duplication.
+        elapsed_unique = np.maximum.accumulate(elapsed_unique)
+        elapsed_on_grid = np.interp(
+            progress_grid,
+            progress_unique,
+            elapsed_unique,
+            left=np.nan,
+            right=np.nan,
+        )
+        elapsed_on_grid_by_track.append(elapsed_on_grid)
+
+    if not elapsed_on_grid_by_track:
+        return progress_grid, []
+
+    elapsed_matrix = np.vstack(elapsed_on_grid_by_track)
+    fleet_mean_elapsed = np.full(progress_grid.size, np.nan, dtype=float)
+    finite_counts = np.sum(np.isfinite(elapsed_matrix), axis=0)
+    valid_baseline = finite_counts > 0
+    if np.any(valid_baseline):
+        fleet_mean_elapsed[valid_baseline] = np.nanmean(
+            elapsed_matrix[:, valid_baseline], axis=0
+        )
+    time_delta_matrix = np.full_like(elapsed_matrix, np.nan)
+    time_delta_matrix[:, valid_baseline] = (
+        elapsed_matrix[:, valid_baseline] - fleet_mean_elapsed[None, valid_baseline]
+    )
+    time_delta_by_track = [time_delta_matrix[idx] for idx in range(time_delta_matrix.shape[0])]
+    return progress_grid, time_delta_by_track
+
+
+def plot_time_delta_along_route(
+    tracks,
+    speed_window_stats,
+    waypoint_progress=None,
+    waypoint_names=None,
+    start_gate_pos=None,
+    export_path=None,
+    export_and_close=False,
+):
+    """
+    Diagnostic plot: cumulative time lost/gained versus progress for each boat.
+
+    Positive values mean a boat is behind the fleet mean at that progress.
+    Negative values mean the boat is ahead.
+    """
+    if not speed_window_stats or speed_window_stats.get("routeSampleCount", 0) < 2:
+        return
+
+    route_sample_count = int(speed_window_stats["routeSampleCount"])
+    progress_grid, time_delta_by_track = compute_time_delta_samples_along_route(
+        tracks, route_sample_count, start_gate_pos=start_gate_pos
+    )
+    if progress_grid is None or not time_delta_by_track:
+        return
+
+    fig, ax = plt.subplots()
+    prepare_figure(fig, export_and_close=export_and_close)
+    ax.grid(True)
+
+    default_colors = plt.cm.hsv(np.linspace(0, 1, max(len(tracks), 1)))
+    has_any_series = False
+    for track_index, (track, time_delta) in enumerate(zip(tracks, time_delta_by_track)):
+        finite_mask = np.isfinite(time_delta)
+        if np.count_nonzero(finite_mask) < 2:
+            continue
+        has_any_series = True
+        line_color = track.get("color") or default_colors[track_index]
+        ax.plot(
+            progress_grid[finite_mask],
+            time_delta[finite_mask],
+            color=line_color,
+            linewidth=1.2,
+            label=latex_display_name(track.get("name", f"Boat {track_index + 1}")),
+        )
+
+    if not has_any_series:
+        if export_and_close:
+            plt.close(fig)
+        return
+
+    ax.axhline(0.0, color=(0.2, 0.2, 0.2), linewidth=1.0, linestyle="--")
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(60.0))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(format_minutes_as_hhmm))
+    ax.yaxis.set_minor_locator(mticker.MultipleLocator(15.0))
+    ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.tick_params(axis="y", which="minor", labelleft=False)
+    ax.grid(True, which="major", axis="both")
+    ax.grid(True, which="minor", axis="y", alpha=0.35)
+    sph.apply_waypoint_ticks(ax, waypoint_progress, waypoint_names)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel(r"$\mathrm{Progress}\,[-]$")
+    ax.set_ylabel(r"$\Delta t\,[\mathrm{min}]$")
+    ax.set_title("Time lost/gained vs progress")
+    legend_columns = 1 if ACTIVE_FIGURE_PROFILE.name == "phone" else 2
+    ax.legend(loc="best", ncol=legend_columns)
+
+    if export_path is not None:
+        export_path = Path(export_path)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        save_figure(fig, export_path)
+    if export_and_close:
+        plt.close(fig)
+
+
 def plot_speed_range_along_route(
     tracks,
     speed_window_stats,

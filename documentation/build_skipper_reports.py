@@ -201,10 +201,19 @@ def iter_expected_pair_figure_paths(boat_names: List[str]) -> Iterable[Path]:
                 yield DOC_DIR / "figures" / variant / f"speed-delta-pair-{left_slug}-vs-{right_slug}.pdf"
 
 
+def iter_expected_shared_figure_paths() -> Iterable[Path]:
+    """Yield expected shared (non-pair) figures required by main-shared.tex."""
+    for variant in ("desktop", "phone"):
+        yield DOC_DIR / "figures" / variant / "time-delta-along-route.pdf"
+
+
 def find_missing_required_figures(boat_names: List[str]) -> List[Path]:
-    """Return all expected pair figures that are missing on disk."""
+    """Return all expected figures referenced by reports that are missing on disk."""
     missing_paths: List[Path] = []
     for figure_path in iter_expected_pair_figure_paths(boat_names):
+        if not figure_path.exists():
+            missing_paths.append(figure_path)
+    for figure_path in iter_expected_shared_figure_paths():
         if not figure_path.exists():
             missing_paths.append(figure_path)
     return missing_paths

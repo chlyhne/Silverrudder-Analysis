@@ -109,6 +109,14 @@ Use the plot shapes as direct diagnostics:
 \item \textbf{Time leaks:} a long upper tail (large positive deltas) means the boat had patches where lost a lot of time in one spot. This highlights tradegies much better than speed plots.
 \item \textbf{Slow vs fast leg normalization:} There might be severeal knots differencin boat speed on a leg where everyone is going more than 8 knots. That is not a big pace difference, whereas 0.5 knots when everyone is doing 1.5 knots is massive. Pace plots keeps this in perspective.
 \end{itemize}
+\paragraph{Cumulative time view.}
+The figure below shows cumulative time gained/lost versus progress for all boats in one plot.
+Positive values mean a boat is behind the fleet mean at that point on the course, while negative values mean it is ahead.
+\begin{figure}[H]
+\centering
+\includegraphics{figures/\figurevariant/time-delta-along-route.pdf}
+\caption{Cumulative time gained/lost versus progress (all boats).}
+\end{figure}
 \sectionbreak
 \section*{Leg 1: Start-Troense}
 The data for this leg was bad. By Troense the data is good again. That means that the only analysis possible is how long from the start it took to get to Troense.
