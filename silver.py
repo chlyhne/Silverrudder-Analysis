@@ -188,6 +188,31 @@ def initialize_parallel_render_context(context):
     """
     global PARALLEL_RENDER_CONTEXT
     PARALLEL_RENDER_CONTEXT = context
+    configure_worker_tex_cache()
+
+
+def configure_worker_tex_cache():
+    """
+    Isolate Matplotlib TeX cache per process to avoid Windows file-lock races.
+
+    Matplotlib's TexManager uses one shared cache directory by default. When
+    multiple worker processes render identical TeX strings in parallel, they can
+    contend on the same *.dvi target and trigger PermissionError on Windows.
+    """
+    if not matplotlib.rcParams.get("text.usetex", False):
+        return
+    try:
+        from matplotlib.texmanager import TexManager
+    except Exception:
+        return
+
+    worker_tex_cache = (
+        Path(matplotlib.get_cachedir())
+        / "tex.cache-workers"
+        / f"pid-{os.getpid()}"
+    )
+    worker_tex_cache.mkdir(parents=True, exist_ok=True)
+    TexManager._texcache = str(worker_tex_cache)
 
 
 def render_plot_family_task(profile_name, family_name, export_dir_path, export_and_close):
